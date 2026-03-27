@@ -1,7 +1,13 @@
-"""Live end-to-end test: real HN story -> real article fetch -> Gemini summary -> validation."""
+"""Live end-to-end test: real HN story -> real article fetch -> Gemini summary -> validation.
 
-import asyncio
+Writes a detailed artifact to tests/artifacts/ so results can be inspected after the run.
+"""
+
+import json
+import re
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import aiohttp
 import pytest
@@ -10,6 +16,24 @@ from hndigest.mcp.hn_mcp import fetch_top_stories, fetch_item
 from hndigest.mcp.llm_mcp import LLMAdapter
 
 _CONFIG_DIR = Path(__file__).resolve().parents[1] / "config"
+_ARTIFACTS_DIR = Path(__file__).resolve().parent / "artifacts"
+
+
+def _write_artifact(name: str, data: dict[str, Any]) -> Path:
+    """Write a JSON artifact file with timestamped name.
+
+    Args:
+        name: Base name for the artifact file.
+        data: Dict to serialize as JSON.
+
+    Returns:
+        Path to the written artifact file.
+    """
+    _ARTIFACTS_DIR.mkdir(exist_ok=True)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    path = _ARTIFACTS_DIR / f"{ts}_{name}.json"
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    return path
 
 
 class TestFullPipelineLive:
@@ -17,6 +41,12 @@ class TestFullPipelineLive:
 
     async def test_real_story_summary_and_validation(self) -> None:
         """End-to-end: HN API -> article fetch -> Gemini summary -> validation."""
+        artifact: dict[str, Any] = {
+            "test": "test_real_story_summary_and_validation",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "stages": {},
+        }
+
         async with aiohttp.ClientSession() as session:
             # 1. Get top stories from HN
             story_ids = await fetch_top_stories(session)
@@ -31,9 +61,15 @@ class TestFullPipelineLive:
                     break
 
             assert story is not None, "No story with URL found in top 20"
-            print(f"\n--- Story: {story['title']}")
-            print(f"--- URL: {story['url']}")
-            print(f"--- Score: {story.get('score', 0)} | Comments: {story.get('descendants', 0)}")
+
+            artifact["stages"]["hn_story"] = {
+                "id": story.get("id"),
+                "title": story.get("title"),
+                "url": story.get("url"),
+                "score": story.get("score", 0),
+                "comments": story.get("descendants", 0),
+                "author": story.get("by"),
+            }
 
             # 3. Fetch article text (basic extraction)
             try:
@@ -45,33 +81,58 @@ class TestFullPipelineLive:
             except Exception as exc:
                 pytest.fail(f"Failed to fetch article URL: {exc}")
 
-            # Basic text extraction (strip HTML tags for now)
-            import re
             text = re.sub(r"<[^>]+>", " ", html)
             text = re.sub(r"\s+", " ", text).strip()
             article_text = text[:8000]
 
             assert len(article_text) > 100, f"Article text too short ({len(article_text)} chars)"
-            print(f"--- Article text: {len(article_text)} chars")
-            print(f"--- First 200 chars: {article_text[:200]}...")
+
+            artifact["stages"]["article_fetch"] = {
+                "raw_html_chars": len(html),
+                "extracted_text_chars": len(article_text),
+                "first_500_chars": article_text[:500],
+            }
 
         # 4. Summarize with Gemini
         adapter = LLMAdapter(config_path=_CONFIG_DIR / "llm.yaml")
         try:
             summary = await adapter.generate_summary(article_text, story["title"])
             assert len(summary) > 20, f"Summary too short: {summary!r}"
-            print(f"\n--- Summary ({len(summary)} chars):")
-            print(f"    {summary}")
+
+            artifact["stages"]["summarization"] = {
+                "provider": adapter.provider,
+                "model": adapter.model,
+                "summary": summary,
+                "summary_chars": len(summary),
+            }
 
             # 5. Validate the summary against source
             validation = await adapter.validate_summary(summary, article_text)
             assert "result" in validation
             assert validation["result"] in ("pass", "fail")
-            print(f"\n--- Validation result: {validation['result']}")
-            if validation.get("details"):
-                for claim in validation["details"][:3]:
-                    found = claim.get("found_in_source", "?")
-                    claim_text = claim.get("claim", "?")
-                    print(f"    [{found}] {claim_text[:120]}")
+
+            artifact["stages"]["validation"] = {
+                "result": validation["result"],
+                "claims": validation.get("details", []),
+            }
+
+            artifact["overall_result"] = "PASS"
+        except Exception as exc:
+            artifact["overall_result"] = "FAIL"
+            artifact["error"] = str(exc)
+            raise
         finally:
             await adapter.close()
+            # Always write artifact, even on failure
+            artifact_path = _write_artifact("pipeline_live", artifact)
+            print(f"\n--- Artifact written to: {artifact_path}")
+            print(f"--- Story: {artifact['stages'].get('hn_story', {}).get('title', '?')}")
+            summary_stage = artifact["stages"].get("summarization", {})
+            print(f"--- Provider: {summary_stage.get('provider', '?')} / {summary_stage.get('model', '?')}")
+            print(f"--- Summary: {summary_stage.get('summary', '?')}")
+            val_stage = artifact["stages"].get("validation", {})
+            print(f"--- Validation: {val_stage.get('result', '?')}")
+            for claim in val_stage.get("claims", [])[:5]:
+                found = claim.get("found_in_source", "?")
+                claim_text = claim.get("claim", "?")
+                print(f"    [{'PASS' if found else 'FAIL'}] {claim_text[:120]}")

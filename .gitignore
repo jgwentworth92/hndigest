@@ -13,3 +13,4 @@ venv/
 .worktrees/
 .pytest_cache/
 .mypy_cache/
+tests/artifacts/

@@ -64,6 +64,7 @@ Everything else comes from the Python standard library (asyncio, sqlite3, json, 
 - All tests are end-to-end. No mocking.
 - Test runner: pytest with asyncio support.
 - **No tests may be skipped.** If a test requires env vars, API keys, network access, or any external setup, ask the user to provide the required configuration before running tests. A skipped test is a failing test.
+- **Test artifacts:** Tests that call external APIs (HN, LLM) must write JSON artifacts to `tests/artifacts/` with timestamped filenames. Artifacts record the input data, provider/model used, responses, and validation results so runs can be inspected after the fact. Artifacts are gitignored.
 
 ## Documentation Rules
 
