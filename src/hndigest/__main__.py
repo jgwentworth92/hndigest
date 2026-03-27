@@ -69,6 +69,41 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Path to the SQLite database file (default: hndigest.db).",
     )
 
+    # --- digest ---
+    digest_parser = subparsers.add_parser(
+        "digest", help="Generate or display a digest."
+    )
+    digest_group = digest_parser.add_mutually_exclusive_group()
+    digest_group.add_argument(
+        "--now",
+        action="store_true",
+        default=False,
+        help="Generate a digest immediately from current data and print it.",
+    )
+    digest_group.add_argument(
+        "--latest",
+        action="store_true",
+        default=False,
+        help="Display the most recent digest from the database.",
+    )
+    digest_parser.add_argument(
+        "--db-path",
+        dest="db_path",
+        default="hndigest.db",
+        help="Path to the SQLite database file (default: hndigest.db).",
+    )
+
+    # --- categories ---
+    categories_parser = subparsers.add_parser(
+        "categories", help="Show category breakdown for today's stories."
+    )
+    categories_parser.add_argument(
+        "--db-path",
+        dest="db_path",
+        default="hndigest.db",
+        help="Path to the SQLite database file (default: hndigest.db).",
+    )
+
     return parser
 
 
@@ -87,13 +122,22 @@ def main() -> None:
         parser.print_help()
         sys.exit(1)
 
-    from hndigest.cli import cmd_start, cmd_status, cmd_stop, cmd_stories
+    from hndigest.cli import (
+        cmd_categories,
+        cmd_digest,
+        cmd_start,
+        cmd_status,
+        cmd_stop,
+        cmd_stories,
+    )
 
     dispatch: dict[str, object] = {
         "start": cmd_start,
         "stop": cmd_stop,
         "status": cmd_status,
         "stories": cmd_stories,
+        "digest": cmd_digest,
+        "categories": cmd_categories,
     }
 
     handler = dispatch.get(args.command)
