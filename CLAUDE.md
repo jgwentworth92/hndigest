@@ -39,8 +39,9 @@ Everything else comes from the Python standard library (asyncio, sqlite3, json, 
 
 ## Configuration
 
-- YAML files in `config/` for category rules and scoring weights.
-- No config in code. Changing categories or scoring weights requires only YAML edits.
+- YAML files in `config/` for category rules, scoring weights, LLM provider settings, and prompt templates.
+- No config in code. Changing categories, scoring weights, prompts, or LLM provider requires only YAML/.env edits.
+- Prompt templates live in `config/prompts.yaml` with placeholder variables. Never hardcode prompts in Python.
 
 ## Project Structure
 

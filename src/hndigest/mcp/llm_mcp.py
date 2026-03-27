@@ -20,6 +20,7 @@ import yaml
 logger = logging.getLogger(__name__)
 
 _DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[3] / "config" / "llm.yaml"
+_DEFAULT_PROMPTS_PATH = Path(__file__).resolve().parents[3] / "config" / "prompts.yaml"
 
 # Environment variable names per provider
 _ENV_KEYS: dict[str, str] = {
@@ -33,23 +34,32 @@ _ENV_KEYS: dict[str, str] = {
 class LLMAdapter:
     """Unified interface to multiple LLM providers.
 
-    Loads configuration from config/llm.yaml and reads API keys from
-    environment variables. Provides generate_summary and validate_summary
-    as the two tool operations used by the Summarizer and Validator agents.
+    Loads configuration from config/llm.yaml, prompt templates from
+    config/prompts.yaml, and reads API keys from environment variables.
+    Provides generate_summary and validate_summary as the two tool
+    operations used by the Summarizer and Validator agents.
 
     Args:
         config_path: Path to the LLM YAML config file.
+        prompts_path: Path to the prompts YAML config file.
         provider_override: Override the provider from config (for testing).
     """
 
     def __init__(
         self,
         config_path: str | Path | None = None,
+        prompts_path: str | Path | None = None,
         provider_override: str | None = None,
     ) -> None:
         path = Path(config_path) if config_path else _DEFAULT_CONFIG_PATH
         with open(path, "r", encoding="utf-8") as fh:
             self._config: dict[str, Any] = yaml.safe_load(fh)
+
+        prompts_file = Path(prompts_path) if prompts_path else _DEFAULT_PROMPTS_PATH
+        with open(prompts_file, "r", encoding="utf-8") as fh:
+            self._prompts: dict[str, Any] = yaml.safe_load(fh)
+
+        logger.info("Loaded prompt templates from %s", prompts_file)
 
         self.provider = provider_override or os.environ.get(
             "LLM_PROVIDER", self._config.get("provider", "gemini")
@@ -242,6 +252,8 @@ class LLMAdapter:
     async def generate_summary(self, article_text: str, title: str) -> str:
         """Generate a 2-3 sentence summary of an article.
 
+        Prompt templates are loaded from config/prompts.yaml at init time.
+
         Args:
             article_text: The extracted article text.
             title: The story title for context.
@@ -249,13 +261,13 @@ class LLMAdapter:
         Returns:
             A 2-3 sentence summary.
         """
-        system_prompt = (
-            "You are a concise technical summarizer. "
-            "Summarize the article in exactly 2-3 sentences. "
-            "Only describe what the article says. "
-            "No opinions, no speculation, no information not present in the article."
-        )
-        prompt = f"Title: {title}\n\nArticle:\n{article_text[:8000]}"
+        max_chars = self._prompts.get("max_article_chars", 8000)
+        templates = self._prompts["summarizer"]
+        system_prompt = templates["system"].strip()
+        prompt = templates["user"].format(
+            title=title,
+            article_text=article_text[:max_chars],
+        ).strip()
 
         result = await self._call_llm(prompt, system_prompt)
         logger.info("Generated summary for '%s' (%d chars)", title[:60], len(result))
@@ -263,6 +275,8 @@ class LLMAdapter:
 
     async def validate_summary(self, summary: str, source_text: str) -> dict[str, Any]:
         """Validate that a summary is faithful to its source article.
+
+        Prompt templates are loaded from config/prompts.yaml at init time.
 
         Args:
             summary: The generated summary to validate.
@@ -272,27 +286,19 @@ class LLMAdapter:
             A dict with "result" ("pass" or "fail") and "details" (list
             of per-claim checks with citations).
         """
-        system_prompt = (
-            "You are a fact-checking validator. "
-            "Check whether every claim in the summary appears in the source article. "
-            "Respond with a JSON object containing:\n"
-            '- "result": "pass" or "fail"\n'
-            '- "claims": a list of objects, each with "claim" (str), '
-            '"found_in_source" (bool), and "citation" (str, the relevant '
-            "sentence from the source, or empty if not found).\n"
-            "Respond with ONLY the JSON object, no other text."
-        )
-        prompt = (
-            f"Summary:\n{summary}\n\n"
-            f"Source article:\n{source_text[:8000]}"
-        )
+        max_chars = self._prompts.get("max_article_chars", 8000)
+        templates = self._prompts["validator"]
+        system_prompt = templates["system"].strip()
+        prompt = templates["user"].format(
+            summary=summary,
+            source_text=source_text[:max_chars],
+        ).strip()
 
         result_text = await self._call_llm(prompt, system_prompt)
 
         try:
             parsed = json.loads(result_text)
         except json.JSONDecodeError:
-            # Try to extract JSON from the response if wrapped in markdown
             import re
             match = re.search(r"\{.*\}", result_text, re.DOTALL)
             if match:

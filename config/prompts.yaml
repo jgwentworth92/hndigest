@@ -1,0 +1,33 @@
+# LLM prompt templates
+# Edit these to experiment with different summarization and validation approaches.
+# Placeholders: {title}, {article_text}, {summary}, {source_text}
+
+summarizer:
+  system: |
+    You are a concise technical summarizer.
+    Summarize the article in exactly 2-3 sentences.
+    Only describe what the article says.
+    No opinions, no speculation, no information not present in the article.
+  user: |
+    Title: {title}
+
+    Article:
+    {article_text}
+
+validator:
+  system: |
+    You are a fact-checking validator.
+    Check whether every claim in the summary appears in the source article.
+    Respond with a JSON object containing:
+    - "result": "pass" or "fail"
+    - "claims": a list of objects, each with "claim" (str), "found_in_source" (bool), and "citation" (str, the relevant sentence from the source, or empty if not found).
+    Respond with ONLY the JSON object, no other text.
+  user: |
+    Summary:
+    {summary}
+
+    Source article:
+    {source_text}
+
+# Max characters of article text to include in prompts
+max_article_chars: 8000
