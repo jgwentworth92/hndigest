@@ -70,6 +70,7 @@ Everything else comes from the Python standard library (asyncio, sqlite3, json, 
 
 - Specs (`specs/`) contain requirements and architecture in prose, tables, and diagrams. Never code.
 - ADRs (`docs/adr/`) describe decisions in plain language and tables. Never code. Use phased checklists with checkboxes for implementation plans.
+- **Every implementation phase requires an ADR before any code is written.** No exceptions. The ADR must cover: problem, options considered, decision, and phased implementation plan with checkboxes.
 - README files provide orientation for their directory. Keep them brief.
 
 ## Git
