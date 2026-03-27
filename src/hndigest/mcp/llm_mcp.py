@@ -249,6 +249,56 @@ class LLMAdapter:
                 f"Unexpected OpenAI response structure: {exc}"
             ) from exc
 
+    @staticmethod
+    def _parse_json_response(text: str) -> dict[str, Any] | None:
+        """Extract and parse a JSON object from an LLM response.
+
+        Handles responses that are pure JSON, wrapped in markdown code
+        fences, or have trailing text after the JSON block.
+
+        Args:
+            text: Raw LLM response text.
+
+        Returns:
+            Parsed dict, or None if no valid JSON could be extracted.
+        """
+        import re
+
+        # Try direct parse first
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+
+        # Strip markdown code fences
+        fenced = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
+        if fenced:
+            try:
+                return json.loads(fenced.group(1))
+            except json.JSONDecodeError:
+                pass
+
+        # Find the outermost balanced braces
+        start = text.find("{")
+        if start == -1:
+            logger.error("No JSON object found in response: %s", text[:200])
+            return None
+
+        depth = 0
+        for i in range(start, len(text)):
+            if text[i] == "{":
+                depth += 1
+            elif text[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(text[start:i + 1])
+                    except json.JSONDecodeError:
+                        break
+
+        logger.error("Failed to parse JSON from response: %s", text[:200])
+        return None
+
     async def generate_summary(self, article_text: str, title: str) -> str:
         """Generate a 2-3 sentence summary of an article.
 
@@ -296,16 +346,9 @@ class LLMAdapter:
 
         result_text = await self._call_llm(prompt, system_prompt)
 
-        try:
-            parsed = json.loads(result_text)
-        except json.JSONDecodeError:
-            import re
-            match = re.search(r"\{.*\}", result_text, re.DOTALL)
-            if match:
-                parsed = json.loads(match.group())
-            else:
-                logger.error("Failed to parse validation response: %s", result_text[:200])
-                return {"result": "fail", "details": [{"error": "unparseable response"}]}
+        parsed = self._parse_json_response(result_text)
+        if parsed is None:
+            return {"result": "fail", "details": [{"error": "unparseable response"}]}
 
         logger.info("Validation result: %s", parsed.get("result", "unknown"))
         return {
