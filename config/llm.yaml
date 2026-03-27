@@ -1,0 +1,30 @@
+# LLM provider configuration
+# Active provider: gemini, claude, openai, local
+provider: gemini
+
+# Provider-specific settings
+gemini:
+  model: gemini-2.5-flash
+  base_url: https://generativelanguage.googleapis.com/v1beta
+  # API key from env: GEMINI_API_KEY
+
+claude:
+  model: claude-haiku-4-5-20251001
+  base_url: https://api.anthropic.com/v1
+  # API key from env: ANTHROPIC_API_KEY
+
+openai:
+  model: gpt-4.1-nano
+  base_url: https://api.openai.com/v1
+  # API key from env: OPENAI_API_KEY
+
+local:
+  model: ""  # set in .env or override here
+  base_url: http://localhost:11434/v1
+  # Uses OpenAI-compatible API format
+  # API key from env: LOCAL_LLM_API_KEY (if needed)
+
+# Shared settings
+max_tokens: 512
+temperature: 0.3
+timeout_seconds: 30

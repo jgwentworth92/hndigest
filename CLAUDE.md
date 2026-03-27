@@ -61,8 +61,8 @@ Everything else comes from the Python standard library (asyncio, sqlite3, json, 
 ## Testing
 
 - All tests are end-to-end. No mocking.
-- Tests that need network access or LLM API keys are gated by env vars and skip cleanly.
 - Test runner: pytest with asyncio support.
+- **No tests may be skipped.** If a test requires env vars, API keys, network access, or any external setup, ask the user to provide the required configuration before running tests. A skipped test is a failing test.
 
 ## Documentation Rules
 

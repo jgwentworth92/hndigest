@@ -258,10 +258,6 @@ class TestSupervisorLifecycle:
 class TestCollectorLive:
     """Live integration test that hits the real HN API."""
 
-    @pytest.mark.skipif(
-        not os.environ.get("HN_API_TEST"),
-        reason="HN_API_TEST env var not set — skipping live collector test",
-    )
     async def test_collector_live(self) -> None:
         """Run one poll cycle against the real HN API and verify DB + bus output."""
         from hndigest.agents.collector import CollectorAgent
@@ -302,3 +298,57 @@ class TestCollectorLive:
         assert published_count > 0, "Expected at least one story published to bus"
 
         conn.close()
+
+
+# ------------------------------------------------------------------
+# Test 6: LLM adapter with Gemini
+# ------------------------------------------------------------------
+
+_LLM_CONFIG = _WORKTREE_ROOT / "config" / "llm.yaml"
+
+
+class TestLLMAdapter:
+    """Verify LLM adapter can call the configured provider."""
+
+    async def test_generate_summary(self) -> None:
+        """Call generate_summary via Gemini and verify a non-empty response."""
+        from hndigest.mcp.llm_mcp import LLMAdapter
+
+        adapter = LLMAdapter(config_path=_LLM_CONFIG)
+        try:
+            summary = await adapter.generate_summary(
+                article_text=(
+                    "Python 3.13 was released today with major improvements "
+                    "to the GIL. The new free-threaded mode allows true "
+                    "parallelism for CPU-bound workloads. Benchmarks show "
+                    "2-3x speedups on multi-core machines for scientific "
+                    "computing tasks."
+                ),
+                title="Python 3.13 Released with Free-Threaded Mode",
+            )
+            assert len(summary) > 20, f"Summary too short: {summary!r}"
+            assert isinstance(summary, str)
+        finally:
+            await adapter.close()
+
+    async def test_validate_summary(self) -> None:
+        """Call validate_summary via Gemini and verify structured response."""
+        from hndigest.mcp.llm_mcp import LLMAdapter
+
+        adapter = LLMAdapter(config_path=_LLM_CONFIG)
+        try:
+            source = (
+                "Rust 1.80 introduces async closures and improves "
+                "compile times by 15%. The borrow checker has been "
+                "updated to handle more lifetime patterns."
+            )
+            summary = (
+                "Rust 1.80 adds async closures and 15% faster compilation. "
+                "The borrow checker now supports more lifetime patterns."
+            )
+            result = await adapter.validate_summary(summary, source)
+            assert "result" in result
+            assert result["result"] in ("pass", "fail")
+            assert "details" in result
+        finally:
+            await adapter.close()
