@@ -27,15 +27,17 @@ Everything else comes from the Python standard library (asyncio, sqlite3, json, 
 
 ## Concurrency Model
 
-- Seven agents run as independent `asyncio.Task` instances managed by a supervisor.
+- Nine agents run as independent `asyncio.Task` instances managed by a supervisor: collector, orchestrator, fetcher, categorizer, scorer, summarizer, validator, report-builder, chat.
 - Message bus: dict of `asyncio.Queue` per channel. Agents publish/subscribe by channel name.
 - No shared mutable state between agents. All inter-agent communication goes through the bus.
+- The orchestrator gates expensive operations (fetch, summarize) behind priority thresholds and a daily token budget. Cheap operations (categorize, score) run on every story.
 
 ## MCP Servers
 
-- Four MCP servers: hn-mcp, web-mcp, sqlite-mcp, llm-mcp.
+- Five MCP servers: hn-mcp, web-mcp, sqlite-mcp, llm-mcp, analytics-mcp.
 - Each server lives in `src/hndigest/mcp/` as its own module.
 - Agents interact with external systems exclusively through MCP tool interfaces.
+- analytics-mcp provides 12 query tools for the chat agent's ReAct loop.
 
 ## Configuration
 
