@@ -1,4 +1,4 @@
-# ADR-003: Phase 2 Content Pipeline — Fetcher, Categorizer, Report Builder
+# ADR-002: Phase 2 Content Pipeline — Fetcher, Categorizer, Report Builder
 
 ## Status: ACCEPTED
 ## Date: 2026-03-27

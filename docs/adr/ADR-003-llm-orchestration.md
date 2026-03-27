@@ -1,4 +1,4 @@
-# ADR-002: LLM Orchestration — Prompt Chains, Retry Logic, Provider Abstraction
+# ADR-003: LLM Orchestration — Prompt Chains, Retry Logic, Provider Abstraction
 
 ## Status: ACCEPTED
 ## Date: 2026-03-27
