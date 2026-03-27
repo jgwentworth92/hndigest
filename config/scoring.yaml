@@ -1,0 +1,21 @@
+# Scoring weights for the Scorer agent.
+# See SPEC-000 section 5.8 for details.
+
+weights:
+  score_velocity: 0.35
+  comment_velocity: 0.30
+  front_page_presence: 0.20
+  recency: 0.15
+
+recency_decay:
+  6: 100    # 6 hours = 100
+  12: 70    # 12 hours = 70
+  24: 40    # 24 hours = 40
+  48: 10    # 48 hours = 10
+
+front_page_scale:
+  1: 20
+  2: 50
+  3: 100   # 3+ endpoints
+
+baseline_days: 7  # trailing days for percentile normalization
