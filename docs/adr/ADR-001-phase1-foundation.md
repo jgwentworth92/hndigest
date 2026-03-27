@@ -143,3 +143,51 @@ hndigest needs a working foundation before any agents can run: a database schema
 - The message bus is in-process only. If we later need cross-process communication, the abstract interface (publish/subscribe) allows swapping to Redis or NATS without changing agent code.
 - The collector starts with topstories only. Adding new/best/show/ask/job endpoints is a configuration change in later phases.
 - The scorer needs historical data for percentile normalization. On first run with no baseline, it falls back to raw velocity values until enough data accumulates (approximately 7 days).
+
+---
+
+## Amendments (added during Phase 1 implementation)
+
+### Amendment 1: LLM adapter added to Phase 1 (originally Phase 3)
+
+The configurable LLM adapter was pulled forward into Phase 1 to establish the provider abstraction early. This was not in the original Phase 1 plan.
+
+| Decision | Detail |
+|---|---|
+| What was added | LLM adapter in `src/hndigest/mcp/llm_mcp.py` with pluggable provider support |
+| Providers supported | Gemini, Claude (Anthropic), OpenAI, local OpenAI-compatible endpoints |
+| Default provider | Gemini (`gemini-2.5-flash`) — fastest and cheapest |
+| Default models | Gemini: `gemini-2.5-flash`, Claude: `claude-haiku-4-5-20251001`, OpenAI: `gpt-4.1-nano` |
+| Config | `config/llm.yaml` for provider and model settings, `.env` for API keys |
+| Why now | User decision: establish adapter pattern and verify LLM connectivity before building the summarizer and validator agents in Phase 3 |
+
+### Amendment 2: Prompt templates externalized to YAML
+
+All LLM prompts are defined in `config/prompts.yaml`, not hardcoded in Python.
+
+| Decision | Detail |
+|---|---|
+| Config file | `config/prompts.yaml` |
+| Template format | YAML with `system` and `user` keys per prompt category, using `{placeholder}` variables |
+| Current categories | `summarizer` (system + user with `{title}`, `{article_text}`) and `validator` (system + user with `{summary}`, `{source_text}`) |
+| Rationale | Enables prompt experimentation without code changes, consistent with the project principle that all tunable behavior lives in YAML config |
+
+### Amendment 3: Test policy — no skipped tests
+
+Original plan allowed env-gated test skipping. This was changed during implementation.
+
+| Decision | Detail |
+|---|---|
+| Policy | No test may be skipped. If a test requires env vars, API keys, or external setup, the developer must ask for the required configuration before running tests. |
+| Rationale | A skipped test is a failing test. Missing setup should be surfaced immediately, not silently bypassed. |
+| Committed to | CLAUDE.md testing section |
+
+### Amendment 4: Docker containerization goal
+
+The system should be containerizable and runnable via Docker. This is a design constraint, not a Phase 1 deliverable.
+
+| Decision | Detail |
+|---|---|
+| Target | Single-container deployment via Dockerfile and docker-compose.yaml |
+| Architecture fit | Single-process async design, file-based SQLite (volume-mountable), YAML config (mountable or env-overridable) |
+| Timeline | Dockerfile and compose file planned for Phase 4 alongside the FastAPI server |

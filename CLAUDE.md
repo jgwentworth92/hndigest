@@ -39,8 +39,9 @@ Everything else comes from the Python standard library (asyncio, sqlite3, json, 
 
 ## Configuration
 
-- YAML files in `config/` for category rules and scoring weights.
-- No config in code. Changing categories or scoring weights requires only YAML edits.
+- YAML files in `config/` for category rules, scoring weights, LLM provider settings, and prompt templates.
+- No config in code. Changing categories, scoring weights, prompts, or LLM provider requires only YAML/.env edits.
+- Prompt templates live in `config/prompts.yaml` with placeholder variables. Never hardcode prompts in Python.
 
 ## Project Structure
 
@@ -61,8 +62,9 @@ Everything else comes from the Python standard library (asyncio, sqlite3, json, 
 ## Testing
 
 - All tests are end-to-end. No mocking.
-- Tests that need network access or LLM API keys are gated by env vars and skip cleanly.
 - Test runner: pytest with asyncio support.
+- **No tests may be skipped.** If a test requires env vars, API keys, network access, or any external setup, ask the user to provide the required configuration before running tests. A skipped test is a failing test.
+- **Test artifacts:** Tests that call external APIs (HN, LLM) must write JSON artifacts to `tests/artifacts/` with timestamped filenames. Artifacts record the input data, provider/model used, responses, and validation results so runs can be inspected after the fact. Artifacts are gitignored.
 
 ## Documentation Rules
 
