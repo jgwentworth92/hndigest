@@ -22,11 +22,13 @@ _DEFAULT_DB_PATH = "hndigest.db"
 
 
 def cmd_start(args: Any) -> None:
-    """Start the supervisor with Collector and Scorer agents.
+    """Start the supervisor with all Phase 1 and Phase 2 agents.
 
-    Creates a ``Supervisor``, registers ``CollectorAgent`` and
-    ``ScorerAgent``, installs signal handlers for graceful shutdown
-    (SIGINT, SIGTERM), and runs the event loop until shutdown completes.
+    Creates a ``Supervisor``, registers ``CollectorAgent``,
+    ``ScorerAgent``, ``FetcherAgent``, ``CategorizerAgent``, and
+    ``ReportBuilderAgent``, installs signal handlers for graceful
+    shutdown (SIGINT, SIGTERM), and runs the event loop until shutdown
+    completes.
 
     Args:
         args: Parsed CLI arguments. Expected attributes:
@@ -35,6 +37,9 @@ def cmd_start(args: Any) -> None:
     from hndigest.supervisor import Supervisor
     from hndigest.agents.collector import CollectorAgent
     from hndigest.agents.scorer import ScorerAgent
+    from hndigest.agents.fetcher import FetcherAgent
+    from hndigest.agents.categorizer import CategorizerAgent
+    from hndigest.agents.report_builder import ReportBuilderAgent
 
     from hndigest.bus import MessageBus
     from hndigest.db import init_db
@@ -72,10 +77,16 @@ def cmd_start(args: Any) -> None:
 
         collector = CollectorAgent(bus=placeholder_bus, db_conn=db_conn)
         scorer = ScorerAgent(bus=placeholder_bus, db_conn=db_conn)
+        fetcher = FetcherAgent(bus=placeholder_bus, db_conn=db_conn)
+        categorizer = CategorizerAgent(bus=placeholder_bus, db_conn=db_conn)
+        report_builder = ReportBuilderAgent(bus=placeholder_bus, db_conn=db_conn)
 
         supervisor_local = Supervisor(db_path=db_path)
         supervisor_local.register_agent(collector)
         supervisor_local.register_agent(scorer)
+        supervisor_local.register_agent(fetcher)
+        supervisor_local.register_agent(categorizer)
+        supervisor_local.register_agent(report_builder)
 
         await supervisor_local.start()
         logger.info("System is running. Press Ctrl+C to stop.")
@@ -218,6 +229,160 @@ def cmd_stories(args: Any) -> None:
             )
 
         print(f"\n{len(rows)} story(ies) displayed.")
+    except sqlite3.OperationalError as exc:
+        print(f"Error querying database: {exc}")
+    finally:
+        conn.close()
+
+
+def cmd_digest(args: Any) -> None:
+    """Generate or display a digest.
+
+    Two modes are supported:
+
+    * ``--now``: Initialize the database and message bus, create a
+      ``ReportBuilderAgent``, call its ``_build_digest`` method directly
+      to generate a digest from the current data, print the rendered
+      markdown, then exit.
+    * ``--latest``: Query the digests table for the most recently
+      created digest and print its ``content_md`` field.
+
+    Args:
+        args: Parsed CLI arguments. Expected attributes:
+            ``db_path`` (str) -- path to the SQLite database file.
+            ``now`` (bool) -- if True, generate a digest immediately.
+            ``latest`` (bool) -- if True, display the most recent digest.
+    """
+    db_path: str = getattr(args, "db_path", _DEFAULT_DB_PATH)
+    now_flag: bool = getattr(args, "now", False)
+    latest_flag: bool = getattr(args, "latest", False)
+
+    if now_flag:
+        _digest_now(db_path)
+    elif latest_flag:
+        _digest_latest(db_path)
+    else:
+        print("Specify --now to generate a digest or --latest to view the most recent one.")
+
+
+def _digest_now(db_path: str) -> None:
+    """Generate a digest immediately and print the markdown output.
+
+    Initializes the database and a minimal bus/agent setup, calls the
+    report builder's ``_build_digest`` method directly, and prints the
+    resulting markdown to stdout.
+
+    Args:
+        db_path: Filesystem path to the SQLite database file.
+    """
+    from hndigest.agents.report_builder import ReportBuilderAgent
+    from hndigest.bus import MessageBus
+    from hndigest.db import init_db
+
+    if not Path(db_path).exists():
+        print(f"Database not found: {db_path}")
+        return
+
+    db_conn = init_db(db_path)
+    bus = MessageBus()
+
+    try:
+        report_builder = ReportBuilderAgent(bus=bus, db_conn=db_conn)
+
+        async def _run() -> str | None:
+            return await report_builder._build_digest()
+
+        result = asyncio.run(_run())
+
+        if result:
+            print(result)
+        else:
+            print("No stories available to build a digest.")
+    except Exception as exc:
+        logger.exception("Failed to generate digest")
+        print(f"Error generating digest: {exc}")
+    finally:
+        db_conn.close()
+
+
+def _digest_latest(db_path: str) -> None:
+    """Display the most recent digest from the database.
+
+    Args:
+        db_path: Filesystem path to the SQLite database file.
+    """
+    if not Path(db_path).exists():
+        print(f"Database not found: {db_path}")
+        return
+
+    conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT content_md, created_at FROM digests "
+            "ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+
+        if row is None:
+            print("No digests found in the database.")
+            return
+
+        content_md, created_at = row
+        print(f"--- Digest generated at {created_at} ---\n")
+        print(content_md)
+    except sqlite3.OperationalError as exc:
+        print(f"Error querying database: {exc}")
+    finally:
+        conn.close()
+
+
+def cmd_categories(args: Any) -> None:
+    """Show category breakdown for today's stories.
+
+    Queries the categories table joined with stories to count how many
+    stories fall into each category for the current UTC day.
+
+    Args:
+        args: Parsed CLI arguments. Expected attributes:
+            ``db_path`` (str) -- path to the SQLite database file.
+    """
+    db_path: str = getattr(args, "db_path", _DEFAULT_DB_PATH)
+
+    if not Path(db_path).exists():
+        print(f"Database not found: {db_path}")
+        return
+
+    conn = sqlite3.connect(db_path)
+    try:
+        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today_start = today_str + "T00:00:00+00:00"
+
+        rows = conn.execute(
+            """
+            SELECT c.category, COUNT(DISTINCT c.story_id) AS story_count
+            FROM categories c
+            JOIN stories s ON s.id = c.story_id
+            WHERE s.posted_at >= ?
+            GROUP BY c.category
+            ORDER BY story_count DESC
+            """,
+            (today_start,),
+        ).fetchall()
+
+        if not rows:
+            print("No categorized stories found for today.")
+            return
+
+        print(f"Category breakdown for {today_str} (UTC):\n")
+        print(f"{'Category':<20}  {'Stories':>7}")
+        print("-" * 30)
+
+        total = 0
+        for category, count in rows:
+            print(f"{category:<20}  {count:>7}")
+            total += count
+
+        print("-" * 30)
+        print(f"{'Total':<20}  {total:>7}")
     except sqlite3.OperationalError as exc:
         print(f"Error querying database: {exc}")
     finally:

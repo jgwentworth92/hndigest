@@ -1,0 +1,125 @@
+# Category taxonomy for story categorization.
+# Edit this file to add categories, keywords, or domain mappings.
+# No code changes required.
+
+categories:
+  ai-ml:
+    keywords:
+      - llm
+      - gpt
+      - transformer
+      - neural
+      - machine learning
+      - deep learning
+      - agent
+      - rag
+    domains:
+      - arxiv.org
+      - huggingface.co
+      - openai.com
+
+  web-dev:
+    keywords:
+      - react
+      - vue
+      - nextjs
+      - css
+      - browser
+      - frontend
+      - backend
+      - api
+    domains:
+      - vercel.com
+      - developer.mozilla.org
+
+  devops-infra:
+    keywords:
+      - kubernetes
+      - docker
+      - aws
+      - terraform
+      - ci/cd
+      - deploy
+      - cloud
+      - linux
+    domains:
+      - cloud.google.com
+      - aws.amazon.com
+
+  languages:
+    keywords:
+      - rust
+      - python
+      - go
+      - typescript
+      - zig
+      - elixir
+      - compiler
+      - type system
+    domains: []
+
+  tools:
+    keywords:
+      - cli
+      - editor
+      - ide
+      - database
+      - library
+      - framework
+      - sdk
+    domains: []
+
+  security:
+    keywords:
+      - vulnerability
+      - cve
+      - breach
+      - encryption
+      - authentication
+      - zero-day
+    domains: []
+
+  career:
+    keywords:
+      - hiring
+      - interview
+      - salary
+      - remote
+      - layoff
+      - startup
+    domains: []
+
+  research:
+    keywords:
+      - paper
+      - study
+      - proof
+      - theorem
+      - algorithm
+    domains:
+      - arxiv.org
+      - dl.acm.org
+      - nature.com
+
+  business:
+    keywords:
+      - funding
+      - acquisition
+      - ipo
+      - revenue
+      - valuation
+      - startup
+    domains: []
+
+  culture:
+    keywords: []
+    domains: []
+
+# HN type mappings: map HN story types to categories.
+hn_type_mappings:
+  show: tools
+  job: career
+  ask: culture
+
+# Default category when no rules match.
+default_category: uncategorized

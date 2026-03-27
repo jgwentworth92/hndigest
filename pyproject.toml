@@ -5,6 +5,7 @@ requires-python = ">=3.12"
 dependencies = [
     "aiohttp",
     "PyYAML",
+    "trafilatura",
 ]
 
 [project.optional-dependencies]
