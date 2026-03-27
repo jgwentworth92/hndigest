@@ -16,7 +16,7 @@ hndigest collects stories from the Hacker News API, fetches their source article
 ## 2. Design Principles
 
 1. **Deterministic by default.** Collection, deduplication, categorization (first pass), scoring, and report assembly are all deterministic. The system produces a useful ranked and categorized feed without any LLM calls.
-2. **LLM is isolated and validated.** Two agents use an LLM: the Summarizer and the Validator. Every summary is checked against its source article before inclusion in the digest.
+2. **LLM is isolated and validated.** Three agents may use an LLM: the Summarizer, the Validator, and the Orchestrator (optional LLM mode). Four agents may use an LLM when the Chat agent is included. Every summary is checked against its source article before inclusion in the digest.
 3. **Every summary is traceable.** Each digest entry links back to the HN story, the source article text, and the raw metadata used for scoring and categorization.
 4. **Minimal dependencies.** Pure Python, asyncio, SQLite, MCP.
 5. **Test without tokens.** The deterministic pipeline (collection through scoring) is fully testable without LLM calls or network access.
@@ -59,7 +59,7 @@ All data is structured: integers (score, comment count, timestamp), strings (tit
 
 ## 5. Agent Architecture
 
-Seven agent instances. Each is an independent, long-running async task. Agents communicate through an in-process async message bus (`asyncio.Queue` per channel).
+Nine agent instances. Each is an independent, long-running async task. Agents communicate through an in-process async message bus (`asyncio.Queue` per channel).
 
 ### 5.1 Message Bus
 
@@ -69,13 +69,17 @@ Dict of `asyncio.Queue` objects, one per channel. Agents call `bus.publish(chann
 
 | Channel | Publisher | Subscriber(s) | Message Content |
 |---|---|---|---|
-| story | Collector | Fetcher, Categorizer, Scorer | Story metadata (id, title, url, score, comments, author, timestamp, hn_type) |
-| article | Fetcher | Summarizer | Story ID + extracted article text |
+| story | Collector | Orchestrator, Categorizer, Scorer | Story metadata (id, title, url, score, comments, author, timestamp, hn_type) |
+| fetch_request | Orchestrator | Fetcher | Story ID + priority + reason for fetch |
+| article | Fetcher | Summarizer (via summarize_request) | Story ID + extracted article text |
+| summarize_request | Orchestrator | Summarizer | Story ID + priority + article text reference |
 | category | Categorizer | Report Builder | Story ID + assigned categories |
-| score | Scorer | Report Builder | Story ID + computed signal score + component breakdown |
+| score | Scorer | Orchestrator, Report Builder | Story ID + computed signal score + component breakdown |
 | summary | Summarizer | Validator | Story ID + generated summary + source text hash |
 | validated_summary | Validator | Report Builder | Story ID + validated summary (or rejection flag) |
 | digest | Report Builder | WebSocket broadcast | Completed daily digest |
+| chat_request | API / CLI | Chat Agent | User query + session ID |
+| chat_response | Chat Agent | API / CLI | Agent response + tool calls log + session ID |
 | system | Supervisor | All agents | Lifecycle commands (shutdown, pause, health_check) |
 
 ### 5.3 Agent Internal Structure
@@ -128,7 +132,7 @@ Process manager. Not an LLM agent.
 **Purpose:** Retrieve article text from story URLs. Handle the messiness of the web: paywalls, PDFs, dead links, non-English content.
 
 **Behavior:**
-1. Receive story message from story channel
+1. Receive fetch_request message from fetch_request channel
 2. If story has no URL (Ask HN, some jobs), use the HN text field instead. Publish to article channel.
 3. Fetch URL with timeout (10 seconds)
 4. Extract article text using readability/trafilatura
@@ -272,6 +276,80 @@ New categories and keyword rules are added by editing the YAML config. No code c
 
 **LLM involvement:** None.
 
+### 5.12 Orchestrator Agent
+
+**Purpose:** Control which stories are fetched and summarized based on priority thresholds and a daily token budget. Sits between the collector and downstream agents (fetcher, summarizer). Logs all dispatch decisions.
+
+**Behavior:**
+1. Subscribe to story channel (receives all new stories from collector) and score channel (receives composite scores)
+2. For each story, evaluate priority using composite score and category
+3. Apply priority threshold: stories below the threshold are logged as "skipped" and not dispatched for fetching
+4. Track daily token budget: estimate token cost per article fetch + summarization, deduct from budget when dispatching
+5. If budget is exhausted, log as "budget_exceeded" and stop dispatching until budget resets (midnight UTC)
+6. For stories above threshold with available budget: publish fetch_request to fetch_request channel
+7. When article is fetched (monitor article channel), publish summarize_request to summarize_request channel
+8. Log every decision to orchestrator_decisions table: story_id, decision (dispatched, skipped, budget_exceeded), reason, priority_score, budget_remaining, decided_at
+9. Optional LLM mode: for stories near the priority threshold (ambiguous cases), call LLM to make a relevance judgment. Controlled by config flag `orchestrator.use_llm` (default: false, pure rules-based)
+
+**Priority thresholds (defined in YAML config):**
+
+| Setting | Default | Description |
+|---|---|---|
+| min_composite_score | 30 | Minimum composite score to dispatch for fetch |
+| daily_token_budget | 100000 | Estimated tokens available per day for fetch + summarize |
+| tokens_per_article | 1000 | Estimated token cost per article (fetch + summarize + validate) |
+| ambiguity_range | 5 | Score range around threshold where LLM mode activates (e.g., 25-35) |
+
+**Toolset (via MCP):** SQLite read (stories, scores), SQLite write (orchestrator_decisions table), LLM API (optional).
+
+**LLM involvement:** Optional (controlled by config flag).
+
+### 5.13 Chat Agent
+
+**Purpose:** Provide a conversational interface for querying collected data using a ReAct (Reason + Act) loop. The chat agent thinks step-by-step, selects tools from the analytics-mcp server, executes them, and synthesizes results into natural language responses.
+
+**Behavior:**
+1. Receive chat_request message from chat_request channel (from CLI or API)
+2. Load conversation history from chat_sessions and chat_messages tables
+3. Enter ReAct loop:
+   a. Reason: analyze the user query and available tool results
+   b. Act: select and call a tool from analytics-mcp, or generate a final response
+   c. Observe: process tool results
+   d. Repeat until the agent has enough information to answer
+4. Persist the conversation turn (user message + agent response + tool calls) to chat_messages table
+5. Publish response to chat_response channel
+
+**Available tools (via analytics-mcp):**
+
+| Tool | Description |
+|---|---|
+| query_stories | Search stories by keyword, category, date range, score threshold |
+| query_digests | Search digests by date range |
+| get_story_detail | Full story data: metadata, article, summary, validation, score |
+| category_breakdown | Count of stories per category for a date range |
+| trending_categories | Categories with increasing story volume over time |
+| top_stories | Top N stories by composite score for a date range |
+| score_distribution | Histogram of composite scores for a date range |
+| author_activity | Stories and scores for a specific HN author |
+| keyword_trend | How often a keyword appears in titles over time |
+| daily_volume | Number of stories collected per day |
+| compare_days | Side-by-side comparison of two days' metrics |
+| system_status | Agent statuses, uptime, message counts |
+
+**Conversation persistence:**
+- Each conversation has a session_id (UUID)
+- Messages are stored in order with role (user/assistant), content, tool calls, and timestamps
+- Sessions can be resumed by session_id
+
+**Access points:**
+- CLI: `hndigest chat "what were the top AI stories today?"`
+- REST: POST /api/chat with {session_id, message}
+- Web dashboard: chat view with streaming responses
+
+**Toolset (via MCP):** analytics-mcp (all 12 tools above), SQLite read/write (chat tables), LLM API.
+
+**LLM involvement:** Yes (always — the ReAct loop requires an LLM).
+
 ---
 
 ## 6. Data Model
@@ -372,6 +450,39 @@ Single SQLite database.
 | story_count | INTEGER | Number of stories included |
 | created_at | TIMESTAMP | When assembled |
 
+### orchestrator_decisions
+
+| Column | Type | Description |
+|---|---|---|
+| id | INTEGER PK | Auto-increment |
+| story_id | INTEGER | FK to stories |
+| decision | TEXT | "dispatched", "skipped", "budget_exceeded" |
+| reason | TEXT | Human-readable reason for the decision |
+| priority_score | REAL | Composite score at time of decision |
+| budget_remaining | INTEGER | Estimated tokens remaining when decision was made |
+| used_llm | INTEGER | 1 if LLM was consulted for this decision, 0 otherwise |
+| decided_at | TIMESTAMP | When the decision was made |
+
+### chat_sessions
+
+| Column | Type | Description |
+|---|---|---|
+| id | TEXT PK | UUID session identifier |
+| started_at | TIMESTAMP | When the session began |
+| last_active | TIMESTAMP | Last message timestamp |
+| message_count | INTEGER | Number of messages in session |
+
+### chat_messages
+
+| Column | Type | Description |
+|---|---|---|
+| id | INTEGER PK | Auto-increment |
+| session_id | TEXT | FK to chat_sessions |
+| role | TEXT | "user" or "assistant" |
+| content | TEXT | Message text |
+| tool_calls | JSON | Tool invocations and results (nullable) |
+| created_at | TIMESTAMP | When the message was created |
+
 ---
 
 ## 7. System Startup and Lifecycle
@@ -382,16 +493,18 @@ Single SQLite database.
 2. Supervisor initializes SQLite database (run migrations if needed)
 3. Supervisor starts all agents as async tasks:
    - collector
+   - orchestrator
    - fetcher
    - categorizer
    - scorer
    - summarizer
    - validator
    - report-builder
+   - chat
 4. Supervisor starts FastAPI server (separate async task)
 5. Supervisor enters health monitoring loop
 
-Collector begins first poll immediately. Fetcher, categorizer, and scorer begin processing as stories arrive on the story channel. Summarizer waits for articles on the article channel. Validator waits for summaries. Report builder waits for its scheduled trigger or a manual request.
+Collector begins first poll immediately. Orchestrator, categorizer, and scorer begin processing as stories arrive on the story channel. Orchestrator dispatches fetch requests to the fetcher based on priority and budget. Summarizer waits for summarize_request messages from the orchestrator. Validator waits for summaries. Report builder waits for its scheduled trigger or a manual request. Chat agent waits for chat_request messages.
 
 ### Modes
 
@@ -412,6 +525,8 @@ Each agent persists results to SQLite after processing each message. If the syst
 - Summarizer failure (LLM error): Mark as no_summary. Story appears in digest without summary.
 - Validator failure: Summary stays as pending_validation. Story appears in digest without summary.
 - Report builder failure: Log error. Data persists. Next scheduled run or manual trigger rebuilds.
+- Orchestrator failure: Log error. Stories still flow to categorizer and scorer. Fetcher and summarizer receive no new requests until orchestrator recovers. Previously dispatched work continues.
+- Chat agent failure: Log error. Chat requests return an error response. All other pipeline agents unaffected.
 - Agent crash: Supervisor restarts with exponential backoff. Max 3 retries, then alert operator.
 
 No failure in any single agent prevents the digest from being generated. A digest with missing summaries or categories is still useful.
@@ -426,6 +541,7 @@ No failure in any single agent prevents the digest from being generated. A diges
 | web-mcp | fetch_url(url, timeout), extract_article_text(html) |
 | sqlite-mcp | read_query(sql), write_event(table, data) |
 | llm-mcp | generate_summary(article_text, title), validate_summary(summary, source_text) |
+| analytics-mcp | query_stories(), query_digests(), get_story_detail(), category_breakdown(), trending_categories(), top_stories(), score_distribution(), author_activity(), keyword_trend(), daily_volume(), compare_days(), system_status() |
 
 ---
 
@@ -448,6 +564,7 @@ Entry point: `python -m hndigest`
 | `hndigest categories` | Show category breakdown for today |
 | `hndigest agents` | Show registered agents, health, throughput |
 | `hndigest config` | Show current configuration (poll interval, scoring weights, category rules) |
+| `hndigest chat "query"` | Send a query to the chat agent and display the response |
 
 ### FastAPI Server
 
@@ -465,6 +582,7 @@ Runs as an async task alongside agents in the same process.
 | /api/agents | GET | Agent registry: name, status, last heartbeat, messages processed |
 | /api/config | GET | Current configuration |
 | /api/digest/generate | POST | Trigger on-demand digest |
+| /api/chat | POST | Send a message to the chat agent. Body: {session_id, message}. Response: {session_id, response, tool_calls} |
 | /api/events | WebSocket | Live stream of new stories and digest completions |
 
 ### Web Dashboard
@@ -478,38 +596,56 @@ Single-page application served by FastAPI. Connects to WebSocket for live update
 - **Live Feed:** Real-time stream of stories as they are collected and processed. Shows pipeline status per story (collected, fetched, categorized, scored, summarized, validated).
 - **Agents:** Live agent status, heartbeats, message throughput.
 - **Categories:** Visual breakdown of story distribution across categories. Trends over time.
+- **Chat:** Conversational interface for querying data. Send natural language questions, receive answers with tool call transparency. Session persistence for multi-turn conversations.
 
 ---
 
 ## 10. Implementation Phases
 
 ### Phase 1: Foundation
-- [ ] Project structure, SQLite schema, message bus, supervisor lifecycle
-- [ ] Agent base class with run loop, heartbeat, subscription/publication
-- [ ] HN collector agent + MCP server (top stories only)
-- [ ] Scorer agent with velocity calculations
-- [ ] CLI: start, stop, status, stories
-- [ ] End-to-end test: collector publishes story -> scorer ranks it -> query via CLI
+- [x] Project structure, SQLite schema, message bus, supervisor lifecycle
+- [x] Agent base class with run loop, heartbeat, subscription/publication
+- [x] HN collector agent + MCP server (top stories only)
+- [x] Scorer agent with velocity calculations
+- [x] CLI: start, stop, status, stories
+- [x] End-to-end test: collector publishes story -> scorer ranks it -> query via CLI
 
 ### Phase 2: Content Pipeline
-- [ ] Fetcher agent + web MCP server (article text extraction)
-- [ ] Categorizer agent + YAML category config
-- [ ] Report builder agent (structured digest from scores + categories, no summaries yet)
-- [ ] CLI: digest --now, digest --latest, categories
-- [ ] End-to-end test: story -> fetch -> categorize -> score -> digest without summaries
+- [x] Fetcher agent + web MCP server (article text extraction)
+- [x] Categorizer agent + YAML category config
+- [x] Report builder agent (structured digest from scores + categories, no summaries yet)
+- [x] CLI: digest --now, digest --latest, categories
+- [x] End-to-end test: story -> fetch -> categorize -> score -> digest without summaries
 
-### Phase 3: LLM Integration
-- [ ] Summarizer agent + LLM MCP server
-- [ ] Validator agent
+### Phase 3: Orchestrator
+- [ ] Orchestrator agent with priority thresholds and token budget
+- [ ] New message bus channels: fetch_request, summarize_request
+- [ ] orchestrator_decisions table migration
+- [ ] Rewire story channel: orchestrator receives stories, dispatches to fetcher
+- [ ] Config: orchestrator.yaml with thresholds, budget, LLM mode flag
+- [ ] Decision logging and budget tracking
+- [ ] End-to-end test: collector -> orchestrator -> fetcher with priority filtering
+
+### Phase 4: LLM Integration
+- [ ] Summarizer agent receives summarize_request from orchestrator
+- [ ] Validator agent with retry logic (ADR-003)
 - [ ] Summary and validation integrated into digest output
-- [ ] Retry logic for failed summaries
+- [ ] Orchestrator optional LLM mode for ambiguous prioritization
 - [ ] End-to-end test: full pipeline with validated summaries in digest
 
-### Phase 4: Interface
-- [ ] FastAPI server with all REST endpoints
+### Phase 5: Chat Agent
+- [ ] Chat agent with ReAct loop
+- [ ] Analytics MCP server with 12 query tools
+- [ ] chat_sessions and chat_messages tables
+- [ ] CLI: hndigest chat "query"
+- [ ] End-to-end test: chat query -> tool calls -> response
+
+### Phase 6: Interface
+- [ ] FastAPI server with all REST endpoints including /api/chat
 - [ ] WebSocket for live updates
-- [ ] Web dashboard
+- [ ] Web dashboard with chat view
 - [ ] Historical digest browsing
+- [ ] Docker containerization
 - [ ] Documentation
 
 ---
@@ -528,4 +664,10 @@ All tests are end-to-end. No mocking of any component at any level.
 
 **Infrastructure tests:** Start supervisor, verify all agents boot, emit heartbeats, and respond to shutdown command. Start FastAPI server, verify all endpoints return correct responses against known database state. Verify WebSocket broadcasts on digest completion.
 
-Every external dependency has an env var gate. Missing key or no network = test skipped with clear message, never fails.
+**Orchestrator tests:** Seed stories with known composite scores. Start orchestrator with a low threshold. Verify stories above threshold produce fetch_request messages. Verify stories below threshold are logged as "skipped" in orchestrator_decisions. Verify budget tracking decrements correctly and stops dispatching when exhausted.
+
+**Chat agent tests:** Send a chat_request with a natural language query. Verify the chat agent calls appropriate analytics-mcp tools. Verify the response is coherent and references real data. Verify conversation persistence in chat_sessions and chat_messages tables. These tests require an LLM API key.
+
+**Analytics MCP tests:** Seed known data. Call each of the 12 analytics tools directly. Verify correct query results against the seeded data. These are deterministic tests that require no network or LLM.
+
+Every external dependency has an env var gate. Missing key or no network = test must not be skipped. Ask for the required configuration before running tests.
