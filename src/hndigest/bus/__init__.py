@@ -16,22 +16,30 @@ logger = logging.getLogger(__name__)
 
 # Channel name constants (from SPEC-000 section 5.2)
 CHANNEL_STORY: str = "story"
+CHANNEL_FETCH_REQUEST: str = "fetch_request"
 CHANNEL_ARTICLE: str = "article"
+CHANNEL_SUMMARIZE_REQUEST: str = "summarize_request"
 CHANNEL_CATEGORY: str = "category"
 CHANNEL_SCORE: str = "score"
 CHANNEL_SUMMARY: str = "summary"
 CHANNEL_VALIDATED_SUMMARY: str = "validated_summary"
 CHANNEL_DIGEST: str = "digest"
+CHANNEL_CHAT_REQUEST: str = "chat_request"
+CHANNEL_CHAT_RESPONSE: str = "chat_response"
 CHANNEL_SYSTEM: str = "system"
 
 ALL_CHANNELS: tuple[str, ...] = (
     CHANNEL_STORY,
+    CHANNEL_FETCH_REQUEST,
     CHANNEL_ARTICLE,
+    CHANNEL_SUMMARIZE_REQUEST,
     CHANNEL_CATEGORY,
     CHANNEL_SCORE,
     CHANNEL_SUMMARY,
     CHANNEL_VALIDATED_SUMMARY,
     CHANNEL_DIGEST,
+    CHANNEL_CHAT_REQUEST,
+    CHANNEL_CHAT_RESPONSE,
     CHANNEL_SYSTEM,
 )
 
