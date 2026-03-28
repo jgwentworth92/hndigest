@@ -10,7 +10,7 @@ from typing import Any
 import aiohttp
 
 from hndigest.agents.base import BaseAgent
-from hndigest.bus import CHANNEL_ARTICLE, CHANNEL_STORY, MessageBus
+from hndigest.bus import CHANNEL_ARTICLE, CHANNEL_FETCH_REQUEST, MessageBus
 from hndigest.mcp import web_mcp
 
 logger = logging.getLogger(__name__)
@@ -19,10 +19,13 @@ logger = logging.getLogger(__name__)
 class FetcherAgent(BaseAgent):
     """Agent that fetches article text from story URLs and persists results.
 
-    Subscribes to the story channel, fetches the article content at each
-    story's URL (or uses the HN text field for self-posts), computes a
+    Subscribes to the fetch_request channel, fetches the article content at
+    each request's URL (or uses the HN text field for self-posts), computes a
     SHA-256 hash, persists to the articles table, and publishes to the
     article channel.
+
+    The orchestrator dispatches individual fetch requests with priority
+    gating, so this agent no longer consumes the raw story stream directly.
 
     Concurrency is bounded by an asyncio.Semaphore to avoid overwhelming
     remote servers.
@@ -42,7 +45,7 @@ class FetcherAgent(BaseAgent):
         super().__init__(
             name="fetcher",
             bus=bus,
-            subscriptions=[CHANNEL_STORY],
+            subscriptions=[CHANNEL_FETCH_REQUEST],
             publications=[CHANNEL_ARTICLE],
         )
         self.db_conn = db_conn
@@ -67,20 +70,30 @@ class FetcherAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     async def process(self, channel: str, message: dict[str, Any]) -> None:
-        """Handle a story message by fetching its article content.
+        """Handle a fetch_request message by fetching its article content.
+
+        The orchestrator dispatches fetch_request messages containing:
+        story_id, url, hn_text, title, and priority.
 
         Args:
             channel: The channel the message arrived on.
-            message: The message payload dict containing story data.
+            message: The message payload dict containing fetch request data.
         """
         payload = message.get("payload", {})
         story_id: int = payload.get("story_id")
         url: str | None = payload.get("url")
         hn_text: str | None = payload.get("hn_text")
+        title: str | None = payload.get("title")
+        priority: float | None = payload.get("priority")
 
         if story_id is None:
             logger.warning("fetcher: received message with no story_id, skipping")
             return
+
+        logger.debug(
+            "fetcher: received fetch_request for story %d (title=%s, priority=%s)",
+            story_id, title, priority,
+        )
 
         # Check if article already exists for this story
         if self._article_exists(story_id):

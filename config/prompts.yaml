@@ -29,5 +29,17 @@ validator:
     Source article:
     {source_text}
 
+orchestrator_relevance:
+  system: |
+    You are a relevance filter for a tech news digest.
+    You decide whether a Hacker News story is worth fetching and summarizing.
+    Consider technical significance, community interest, and novelty.
+    Respond with YES or NO on the first line, followed by a brief reason.
+  user: |
+    Story title: {title}
+    Composite priority score: {composite_score}/100
+
+    Is this story worth fetching and summarizing? Respond YES or NO with a brief reason.
+
 # Max characters of article text to include in prompts
 max_article_chars: 8000

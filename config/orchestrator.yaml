@@ -1,0 +1,23 @@
+# Orchestrator agent configuration
+# Controls which stories are dispatched for fetching and summarization.
+
+priority:
+  # Minimum composite score to dispatch a story for fetch + summarize
+  min_composite_score: 30
+
+  # Score range around threshold where LLM mode activates (if enabled)
+  # Stories with scores between (min - ambiguity_range) and (min + ambiguity_range)
+  # are sent to the LLM for a relevance judgment
+  ambiguity_range: 5
+
+budget:
+  # Estimated tokens available per day for fetch + summarize + validate
+  daily_token_budget: 100000
+
+  # Estimated token cost per article (fetch + summarize + validate combined)
+  tokens_per_article: 1000
+
+llm:
+  # Enable LLM for ambiguous prioritization decisions
+  # When false, orchestrator is pure rules-based
+  use_llm: false

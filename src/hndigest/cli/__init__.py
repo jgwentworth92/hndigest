@@ -22,13 +22,13 @@ _DEFAULT_DB_PATH = "hndigest.db"
 
 
 def cmd_start(args: Any) -> None:
-    """Start the supervisor with all Phase 1 and Phase 2 agents.
+    """Start the supervisor with all Phase 1, Phase 2, and Phase 3 agents.
 
     Creates a ``Supervisor``, registers ``CollectorAgent``,
-    ``ScorerAgent``, ``FetcherAgent``, ``CategorizerAgent``, and
-    ``ReportBuilderAgent``, installs signal handlers for graceful
-    shutdown (SIGINT, SIGTERM), and runs the event loop until shutdown
-    completes.
+    ``ScorerAgent``, ``OrchestratorAgent``, ``FetcherAgent``,
+    ``CategorizerAgent``, and ``ReportBuilderAgent``, installs signal
+    handlers for graceful shutdown (SIGINT, SIGTERM), and runs the event
+    loop until shutdown completes.
 
     Args:
         args: Parsed CLI arguments. Expected attributes:
@@ -39,6 +39,7 @@ def cmd_start(args: Any) -> None:
     from hndigest.agents.scorer import ScorerAgent
     from hndigest.agents.fetcher import FetcherAgent
     from hndigest.agents.categorizer import CategorizerAgent
+    from hndigest.agents.orchestrator import OrchestratorAgent
     from hndigest.agents.report_builder import ReportBuilderAgent
 
     from hndigest.bus import MessageBus
@@ -77,6 +78,7 @@ def cmd_start(args: Any) -> None:
 
         collector = CollectorAgent(bus=placeholder_bus, db_conn=db_conn)
         scorer = ScorerAgent(bus=placeholder_bus, db_conn=db_conn)
+        orchestrator = OrchestratorAgent(bus=placeholder_bus, db_conn=db_conn)
         fetcher = FetcherAgent(bus=placeholder_bus, db_conn=db_conn)
         categorizer = CategorizerAgent(bus=placeholder_bus, db_conn=db_conn)
         report_builder = ReportBuilderAgent(bus=placeholder_bus, db_conn=db_conn)
@@ -84,6 +86,7 @@ def cmd_start(args: Any) -> None:
         supervisor_local = Supervisor(db_path=db_path)
         supervisor_local.register_agent(collector)
         supervisor_local.register_agent(scorer)
+        supervisor_local.register_agent(orchestrator)
         supervisor_local.register_agent(fetcher)
         supervisor_local.register_agent(categorizer)
         supervisor_local.register_agent(report_builder)
