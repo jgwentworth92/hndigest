@@ -1,4 +1,4 @@
-# ADR-004: Orchestrator Agent — Priority Dispatch, Token Budget, Pipeline Rewiring
+# ADR-003: Orchestrator Agent — Priority Dispatch, Token Budget, Pipeline Rewiring
 
 ## Status: ACCEPTED
 ## Date: 2026-03-27
@@ -18,7 +18,7 @@ An orchestrator agent is needed to sit between the collector and downstream agen
 Reference existing architecture:
 - ADR-001 established the message bus with fan-out pub/sub and the supervisor lifecycle
 - ADR-002 implemented the fetcher, categorizer, and report builder as direct subscribers to the story channel
-- ADR-003 defined the summarizer-validator prompt chain, which will now receive work from the orchestrator via summarize_request instead of directly monitoring the article channel
+- ADR-004 defined the summarizer-validator prompt chain, which will now receive work from the orchestrator via summarize_request instead of directly monitoring the article channel
 
 Current flow (Phase 2):
 
@@ -78,7 +78,7 @@ New table: orchestrator_decisions. This is a new migration file (002_orchestrato
 
 ## Decision
 
-Implement the orchestrator agent as described. This becomes Phase 3, pushing the current Phase 3 (LLM integration, ADR-003) to Phase 4. The summarizer (ADR-003) is updated to receive summarize_request from the orchestrator instead of subscribing to the article channel directly. ADR-003's implementation plan Step 2 is amended: summarizer subscribes to summarize_request channel.
+Implement the orchestrator agent as described. This becomes Phase 3, pushing the previous LLM integration phase (now ADR-004) to Phase 4. The summarizer (ADR-004) is updated to receive summarize_request from the orchestrator instead of subscribing to the article channel directly. ADR-004's implementation plan Step 2 is amended: summarizer subscribes to summarize_request channel.
 
 ---
 
@@ -89,7 +89,7 @@ Implement the orchestrator agent as described. This becomes Phase 3, pushing the
 | Phase 1 | ADR-001 | Foundation | No change (done) |
 | Phase 2 | ADR-002 | Content pipeline | No change (done) |
 | Phase 3 | **ADR-004** | LLM integration | **Orchestrator agent** (new) |
-| Phase 4 | ADR-003 | Interface | **LLM integration** (moved from Phase 3) |
+| Phase 4 | ADR-004 | Interface | **LLM integration** (moved from Phase 3) |
 | Phase 5 | ADR-005 (future) | — | **Chat agent** (new) |
 | Phase 6 | ADR-006 (future) | — | **Interface + Docker** (moved from Phase 4) |
 
