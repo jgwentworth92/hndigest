@@ -22,13 +22,14 @@ _DEFAULT_DB_PATH = "hndigest.db"
 
 
 def cmd_start(args: Any) -> None:
-    """Start the supervisor with all Phase 1, Phase 2, and Phase 3 agents.
+    """Start the supervisor with all Phase 1, Phase 2, Phase 3, and Phase 4 agents.
 
     Creates a ``Supervisor``, registers ``CollectorAgent``,
     ``ScorerAgent``, ``OrchestratorAgent``, ``FetcherAgent``,
-    ``CategorizerAgent``, and ``ReportBuilderAgent``, installs signal
-    handlers for graceful shutdown (SIGINT, SIGTERM), and runs the event
-    loop until shutdown completes.
+    ``CategorizerAgent``, ``SummarizerAgent``, ``ValidatorAgent``,
+    and ``ReportBuilderAgent``, installs signal handlers for graceful
+    shutdown (SIGINT, SIGTERM), and runs the event loop until shutdown
+    completes.
 
     Args:
         args: Parsed CLI arguments. Expected attributes:
@@ -40,6 +41,8 @@ def cmd_start(args: Any) -> None:
     from hndigest.agents.fetcher import FetcherAgent
     from hndigest.agents.categorizer import CategorizerAgent
     from hndigest.agents.orchestrator import OrchestratorAgent
+    from hndigest.agents.summarizer import SummarizerAgent
+    from hndigest.agents.validator import ValidatorAgent
     from hndigest.agents.report_builder import ReportBuilderAgent
 
     from hndigest.bus import MessageBus
@@ -81,6 +84,8 @@ def cmd_start(args: Any) -> None:
         orchestrator = OrchestratorAgent(bus=placeholder_bus, db_conn=db_conn)
         fetcher = FetcherAgent(bus=placeholder_bus, db_conn=db_conn)
         categorizer = CategorizerAgent(bus=placeholder_bus, db_conn=db_conn)
+        summarizer = SummarizerAgent(bus=placeholder_bus, db_conn=db_conn)
+        validator = ValidatorAgent(bus=placeholder_bus, db_conn=db_conn)
         report_builder = ReportBuilderAgent(bus=placeholder_bus, db_conn=db_conn)
 
         supervisor_local = Supervisor(db_path=db_path)
@@ -89,6 +94,8 @@ def cmd_start(args: Any) -> None:
         supervisor_local.register_agent(orchestrator)
         supervisor_local.register_agent(fetcher)
         supervisor_local.register_agent(categorizer)
+        supervisor_local.register_agent(summarizer)
+        supervisor_local.register_agent(validator)
         supervisor_local.register_agent(report_builder)
 
         await supervisor_local.start()
