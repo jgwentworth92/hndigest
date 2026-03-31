@@ -53,6 +53,7 @@ Everything else comes from the Python standard library (asyncio, sqlite3, json, 
 - ADRs: `docs/adr/` (prose and tables only, never code)
 - Database migrations: `db/migrations/`
 - Config: `config/`
+- Output: `output/digests/` (generated markdown digest files, gitignored)
 
 ## Code Style
 

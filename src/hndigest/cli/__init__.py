@@ -275,12 +275,37 @@ def cmd_digest(args: Any) -> None:
         print("Specify --now to generate a digest or --latest to view the most recent one.")
 
 
+def _write_digest_file(content_md: str, created_at: str) -> Path:
+    """Write digest markdown to output/digests/ and return the file path.
+
+    Args:
+        content_md: Rendered markdown content.
+        created_at: ISO 8601 timestamp for the filename.
+
+    Returns:
+        Path to the written file.
+    """
+    output_dir = Path("output") / "digests"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Parse timestamp for filename, fall back to now
+    try:
+        dt = datetime.fromisoformat(created_at)
+    except (ValueError, TypeError):
+        dt = datetime.now(timezone.utc)
+
+    filename = dt.strftime("%Y-%m-%d_%H%M%S") + ".md"
+    filepath = output_dir / filename
+    filepath.write_text(content_md, encoding="utf-8")
+    return filepath
+
+
 def _digest_now(db_path: str) -> None:
-    """Generate a digest immediately and print the markdown output.
+    """Generate a digest immediately, print markdown, and write to file.
 
     Initializes the database and a minimal bus/agent setup, calls the
-    report builder's ``_build_digest`` method directly, and prints the
-    resulting markdown to stdout.
+    report builder's ``_build_digest`` method directly, prints the
+    rendered markdown, and writes it to ``output/digests/``.
 
     Args:
         db_path: Filesystem path to the SQLite database file.
@@ -299,13 +324,20 @@ def _digest_now(db_path: str) -> None:
     try:
         report_builder = ReportBuilderAgent(bus=bus, db_conn=db_conn)
 
-        async def _run() -> str | None:
+        async def _run() -> dict | None:
             return await report_builder._build_digest()
 
         result = asyncio.run(_run())
 
-        if result:
-            print(result)
+        if result and result.get("story_count", 0) > 0:
+            content_md = result["content_md"]
+            created_at = result.get("period_end", datetime.now(timezone.utc).isoformat())
+
+            print(content_md)
+
+            filepath = _write_digest_file(content_md, created_at)
+            print(f"\n--- Digest written to: {filepath}")
+            print(f"--- Stories: {result['story_count']}")
         else:
             print("No stories available to build a digest.")
     except Exception as exc:
@@ -316,7 +348,7 @@ def _digest_now(db_path: str) -> None:
 
 
 def _digest_latest(db_path: str) -> None:
-    """Display the most recent digest from the database.
+    """Display the most recent digest from the database and write to file.
 
     Args:
         db_path: Filesystem path to the SQLite database file.
@@ -337,8 +369,12 @@ def _digest_latest(db_path: str) -> None:
             return
 
         content_md, created_at = row
-        print(f"--- Digest generated at {created_at} ---\n")
+
         print(content_md)
+
+        filepath = _write_digest_file(content_md, created_at)
+        print(f"\n--- Digest from {created_at}")
+        print(f"--- Written to: {filepath}")
     except sqlite3.OperationalError as exc:
         print(f"Error querying database: {exc}")
     finally:

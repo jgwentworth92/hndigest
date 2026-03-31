@@ -161,3 +161,13 @@ A `KeyError: 'id'` crash was found when running the system live. The collector p
 **Fix:** Changed scorer and orchestrator to read `payload["story_id"]`. Fixed all test payloads. Added integration tests (`tests/test_integration.py`) that run the real collector, capture its actual bus output, and feed it through every downstream agent — verifying zero processing errors.
 
 **Lesson:** Seeded/hand-crafted test payloads must be validated against the real publisher's output. Integration tests that use actual agent output as input are required for every inter-agent message contract.
+
+### Amendment 3: Digest output written to markdown files (post-Phase 4)
+
+The `digest --now` and `digest --latest` CLI commands originally printed output to stdout only. `digest --now` printed the raw Python dict instead of rendered markdown. No file was written.
+
+| Decision | Detail |
+|---|---|
+| Fix | Both commands now print rendered markdown to stdout and write to `output/digests/YYYY-MM-DD_HHMMSS.md` |
+| Output directory | `output/digests/` — created automatically, gitignored |
+| Rationale | Users need a file artifact to verify the system works. Stdout-only output is ephemeral and the raw dict was unreadable. |
