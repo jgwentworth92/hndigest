@@ -131,7 +131,7 @@ def _make_story_message(
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "source": "test",
         "payload": {
-            "id": story_id,
+            "story_id": story_id,
             "title": title,
             "url": url,
             "score": score,
@@ -491,7 +491,7 @@ class TestFullPipelineWithOrchestrator:
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "source": "test",
                 "payload": {
-                    "id": sid,
+                    "story_id": sid,
                     "title": title,
                     "url": url,
                     "score": hn_score,

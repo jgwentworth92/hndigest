@@ -129,7 +129,7 @@ class OrchestratorAgent(BaseAgent):
         payload: dict[str, Any] = message["payload"]
 
         if channel == CHANNEL_STORY:
-            story_id: int = payload["id"]
+            story_id: int = payload["story_id"]
             self._pending_stories[story_id] = payload
             logger.debug("Stored pending story %d", story_id)
 

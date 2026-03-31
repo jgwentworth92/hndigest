@@ -92,7 +92,7 @@ class ScorerAgent(BaseAgent):
             return
 
         payload: dict[str, Any] = message["payload"]
-        story_id: int = payload["id"]
+        story_id: int = payload["story_id"]
         score: int = payload.get("score", 0)
         comments: int = payload.get("comments", 0)
         posted_at_str: str = payload["posted_at"]

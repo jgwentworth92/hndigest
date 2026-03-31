@@ -166,7 +166,7 @@ class TestScorerWithSeededData:
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "source": "collector",
             "payload": {
-                "id": story_id,
+                "story_id": story_id,
                 "title": "Test Story for Scoring",
                 "url": "https://example.com",
                 "score": 150,
