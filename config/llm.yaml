@@ -28,3 +28,10 @@ local:
 max_tokens: 1024
 temperature: 0.3
 timeout_seconds: 30
+
+# Transient error retry with exponential backoff
+retry:
+  max_retries: 3
+  base_delay_seconds: 1.0
+  backoff_factor: 2.0
+  retryable_status_codes: [429, 500, 502, 503]

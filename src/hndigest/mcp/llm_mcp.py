@@ -3,10 +3,13 @@
 Supports Gemini, Claude, OpenAI, and local OpenAI-compatible endpoints.
 Provider is selected via config/llm.yaml and API keys from environment
 variables. All providers expose the same interface: generate_summary
-and validate_summary.
+and validate_summary. Transient HTTP errors (429, 500, 502, 503) are
+retried with exponential backoff.
 """
 
 from __future__ import annotations
+
+import asyncio
 
 import json
 import logging
@@ -21,6 +24,15 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[3] / "config" / "llm.yaml"
 _DEFAULT_PROMPTS_PATH = Path(__file__).resolve().parents[3] / "config" / "prompts.yaml"
+
+# Environment variable names per provider
+class LLMTransientError(RuntimeError):
+    """Raised for retryable HTTP errors from LLM providers."""
+
+    def __init__(self, status_code: int, message: str) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
 
 # Environment variable names per provider
 _ENV_KEYS: dict[str, str] = {
@@ -73,6 +85,15 @@ class LLMAdapter:
         self._timeout: int = self._config.get("timeout_seconds", 30)
         self._session: aiohttp.ClientSession | None = None
 
+        # Retry settings for transient API errors
+        retry_cfg = self._config.get("retry", {})
+        self._max_retries: int = retry_cfg.get("max_retries", 3)
+        self._base_delay: float = retry_cfg.get("base_delay_seconds", 1.0)
+        self._backoff_factor: float = retry_cfg.get("backoff_factor", 2.0)
+        self._retryable_codes: set[int] = set(
+            retry_cfg.get("retryable_status_codes", [429, 500, 502, 503])
+        )
+
         if not self._api_key and self.provider != "local":
             logger.warning(
                 "No API key found for provider %s (env var: %s)",
@@ -99,7 +120,10 @@ class LLMAdapter:
             self._session = None
 
     async def _call_llm(self, prompt: str, system_prompt: str = "") -> str:
-        """Send a prompt to the configured LLM provider and return the response text.
+        """Send a prompt to the configured LLM provider with retry on transient errors.
+
+        Retries transient HTTP errors (429, 500, 502, 503) with exponential
+        backoff. Non-transient errors fail immediately.
 
         Args:
             prompt: The user prompt to send.
@@ -109,8 +133,41 @@ class LLMAdapter:
             The text response from the LLM.
 
         Raises:
-            RuntimeError: If the API call fails.
+            RuntimeError: If the API call fails after all retries.
         """
+        last_error: Exception | None = None
+
+        for attempt in range(1 + self._max_retries):
+            try:
+                return await self._call_provider(prompt, system_prompt)
+            except LLMTransientError as exc:
+                last_error = exc
+                if attempt < self._max_retries:
+                    delay = self._base_delay * (self._backoff_factor ** attempt)
+                    logger.warning(
+                        "LLM transient error (HTTP %d), retrying in %.1fs "
+                        "(attempt %d/%d): %s",
+                        exc.status_code,
+                        delay,
+                        attempt + 1,
+                        self._max_retries,
+                        exc,
+                    )
+                    await asyncio.sleep(delay)
+                else:
+                    logger.error(
+                        "LLM transient error (HTTP %d), all %d retries exhausted: %s",
+                        exc.status_code,
+                        self._max_retries,
+                        exc,
+                    )
+
+        raise RuntimeError(
+            f"LLM call failed after {self._max_retries} retries: {last_error}"
+        ) from last_error
+
+    async def _call_provider(self, prompt: str, system_prompt: str) -> str:
+        """Dispatch to the configured provider. Raises LLMTransientError for retryable errors."""
         if self.provider == "gemini":
             return await self._call_gemini(prompt, system_prompt)
         elif self.provider == "claude":
@@ -119,6 +176,13 @@ class LLMAdapter:
             return await self._call_openai_compatible(prompt, system_prompt)
         else:
             raise ValueError(f"Unknown LLM provider: {self.provider}")
+
+    def _raise_for_status(self, provider: str, status: int, body: str) -> None:
+        """Raise LLMTransientError for retryable codes, RuntimeError otherwise."""
+        msg = f"{provider} API error {status}: {body[:500]}"
+        if status in self._retryable_codes:
+            raise LLMTransientError(status, msg)
+        raise RuntimeError(msg)
 
     async def _call_gemini(self, prompt: str, system_prompt: str) -> str:
         """Call the Google Gemini API.
@@ -152,9 +216,7 @@ class LLMAdapter:
         async with session.post(url, json=body, timeout=timeout) as resp:
             if resp.status != 200:
                 text = await resp.text()
-                raise RuntimeError(
-                    f"Gemini API error {resp.status}: {text[:500]}"
-                )
+                self._raise_for_status("Gemini", resp.status, text)
             data = await resp.json()
 
         try:
@@ -194,9 +256,7 @@ class LLMAdapter:
         async with session.post(url, json=body, headers=headers, timeout=timeout) as resp:
             if resp.status != 200:
                 text = await resp.text()
-                raise RuntimeError(
-                    f"Claude API error {resp.status}: {text[:500]}"
-                )
+                self._raise_for_status("Claude", resp.status, text)
             data = await resp.json()
 
         try:
@@ -237,9 +297,7 @@ class LLMAdapter:
         async with session.post(url, json=body, headers=headers, timeout=timeout) as resp:
             if resp.status != 200:
                 text = await resp.text()
-                raise RuntimeError(
-                    f"OpenAI API error {resp.status}: {text[:500]}"
-                )
+                self._raise_for_status("OpenAI", resp.status, text)
             data = await resp.json()
 
         try:
