@@ -400,3 +400,64 @@ class TestFullPipelineEndToEnd:
               f"Validated: {stages.get('validated_summaries', 0)}")
 
         conn.close()
+
+
+class TestSystemChannelDoesNotCrashAgents:
+    """Verify that heartbeat messages on the system channel don't crash agents.
+
+    This catches the bug where agents subscribed to the system channel
+    for shutdown signals but their process() method received heartbeat
+    messages and crashed on missing payload keys.
+    """
+
+    async def test_agents_ignore_heartbeats(self) -> None:
+        """Start agent via supervisor, send heartbeat, verify no crash."""
+        from hndigest.supervisor import Supervisor
+        from hndigest.agents.base import BaseAgent
+
+        class _DummyAgent(BaseAgent):
+            """Agent that would crash if process() receives a heartbeat."""
+            def __init__(self, bus: MessageBus) -> None:
+                super().__init__(
+                    name="dummy",
+                    bus=bus,
+                    subscriptions=[CHANNEL_STORY],
+                    publications=[],
+                )
+                self.processed: list[dict[str, Any]] = []
+
+            async def process(self, channel: str, message: dict[str, Any]) -> None:
+                self.processed.append({"channel": channel, "payload": message["payload"]})
+
+        supervisor = Supervisor(db_path=":memory:")
+        temp_bus = MessageBus()
+        agent = _DummyAgent(bus=temp_bus)
+        supervisor.register_agent(agent)
+
+        await supervisor.start()
+
+        # Publish a heartbeat to system channel — this used to crash agents
+        heartbeat: dict[str, Any] = {
+            "type": "heartbeat",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "source": "supervisor",
+            "payload": {"agent": "dummy", "status": "running", "messages_processed": 0},
+        }
+        await supervisor.bus.publish("system", heartbeat)
+
+        # Give agent time to process (or not crash)
+        await asyncio.sleep(0.5)
+
+        # Agent should still be running
+        statuses = supervisor.agent_statuses
+        assert "dummy" in statuses
+        assert statuses["dummy"]["status"] == "running", (
+            f"Agent should be running, got {statuses['dummy']['status']}"
+        )
+
+        # Heartbeat should NOT have been passed to process()
+        assert len(agent.processed) == 0, (
+            f"Heartbeat should not reach process(), got {len(agent.processed)} messages"
+        )
+
+        await supervisor.shutdown()

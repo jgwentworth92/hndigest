@@ -71,6 +71,7 @@ class CollectorAgent(BaseAgent):
         bus: MessageBus,
         db_conn: sqlite3.Connection,
         poll_interval: int = 600,
+        max_stories: int = 10,
     ) -> None:
         super().__init__(
             name="collector",
@@ -80,6 +81,7 @@ class CollectorAgent(BaseAgent):
         )
         self.db_conn = db_conn
         self.poll_interval = poll_interval
+        self.max_stories = max_stories
         self._session: aiohttp.ClientSession | None = None
 
     # ------------------------------------------------------------------
@@ -184,7 +186,8 @@ class CollectorAgent(BaseAgent):
             logger.warning("collector: received empty story list, skipping cycle")
             return
 
-        logger.info("collector: processing %d top story IDs", len(story_ids))
+        story_ids = story_ids[:self.max_stories]
+        logger.info("collector: processing %d top story IDs (max %d)", len(story_ids), self.max_stories)
         now_iso = datetime.now(timezone.utc).isoformat()
 
         for story_id in story_ids:
