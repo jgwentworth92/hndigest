@@ -143,3 +143,21 @@ The `web-mcp` module (`src/hndigest/mcp/web_mcp.py`) provides two tools per SPEC
 - Categories are multi-match, so a single story may appear in multiple category sections of the digest. The report builder must handle deduplication in display (show story once in its highest-scored category, with other categories as tags).
 - Digests in Phase 2 will have scores and categories but no summaries. The "No summary available" placeholder is replaced in Phase 3 when the summarizer and validator come online.
 - The report builder's on-demand trigger introduces a new message pattern: the CLI publishes to the bus rather than just an agent. This is implemented by having the CLI start a minimal supervisor with just the report builder for the `digest --now` command.
+
+---
+
+## Amendments (added post-implementation)
+
+### Amendment 1: Fetcher rewired to fetch_request channel (Phase 3)
+
+The fetcher was originally implemented subscribing to the story channel per this ADR. In Phase 3 (ADR-003, orchestrator agent), the fetcher was rewired to subscribe to `fetch_request` instead of `story`. The orchestrator now controls which stories are dispatched for fetching. The fetcher's internal logic is unchanged — only its subscription channel changed.
+
+### Amendment 2: Payload key mismatch discovered in production (post-Phase 4)
+
+A `KeyError: 'id'` crash was found when running the system live. The collector publishes `story_id` in the message payload, but the scorer and orchestrator expected `id`. This bug was not caught by tests because all tests constructed their own payloads using the same wrong key, effectively testing against themselves.
+
+**Root cause:** No integration test verified that the actual collector output could be processed by downstream agents. All tests used hand-crafted payloads.
+
+**Fix:** Changed scorer and orchestrator to read `payload["story_id"]`. Fixed all test payloads. Added integration tests (`tests/test_integration.py`) that run the real collector, capture its actual bus output, and feed it through every downstream agent — verifying zero processing errors.
+
+**Lesson:** Seeded/hand-crafted test payloads must be validated against the real publisher's output. Integration tests that use actual agent output as input are required for every inter-agent message contract.
