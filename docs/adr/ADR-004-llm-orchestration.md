@@ -203,3 +203,13 @@ The LLM adapter (`llm_mcp.py`) retries transient HTTP errors with exponential ba
 ### Why not a new ADR
 
 This is a detail of the LLM adapter's HTTP transport, not an architectural decision. It doesn't change the agent topology, message bus, or retry semantics at the validator level. ADR-004 already owns the LLM adapter's behavior.
+
+### Amendment 2: max_tokens increased to 2048 (post-Phase 4)
+
+Validation JSON responses from Gemini were being truncated at the original 512 token limit (increased to 1024 in Phase 4, then 2048 post-deployment). The claim-by-claim JSON structure requires more tokens than a simple summary. Truncated JSON caused the `_parse_json_response` fallback to fail, which made the validator treat valid summaries as failed.
+
+| Setting | History |
+|---|---|
+| Original (Phase 1) | 512 |
+| Phase 4 | 1024 (still truncating on detailed validations) |
+| Current | 2048 (sufficient for claim-by-claim JSON with citations) |
