@@ -54,7 +54,7 @@ class TestFullPipelineLive:
 
             # 2. Find a story with a fetchable URL (skip Ask HN, 403s, timeouts)
             story = None
-            html = ""
+            article_text = ""
             for sid in story_ids[:30]:
                 item = await fetch_item(session, sid)
                 if not item or not item.get("url"):
@@ -65,13 +65,16 @@ class TestFullPipelineLive:
                         if resp.status != 200:
                             continue
                         html = await resp.text()
-                        if len(html) > 500:
+                        extracted = re.sub(r"<[^>]+>", " ", html)
+                        extracted = re.sub(r"\s+", " ", extracted).strip()[:8000]
+                        if len(extracted) > 200:
                             story = item
+                            article_text = extracted
                             break
                 except Exception:
                     continue
 
-            assert story is not None, "No fetchable story found in top 30"
+            assert story is not None, "No fetchable story with enough text in top 30"
 
             artifact["stages"]["hn_story"] = {
                 "id": story.get("id"),
@@ -81,12 +84,6 @@ class TestFullPipelineLive:
                 "comments": story.get("descendants", 0),
                 "author": story.get("by"),
             }
-
-            text = re.sub(r"<[^>]+>", " ", html)
-            text = re.sub(r"\s+", " ", text).strip()
-            article_text = text[:8000]
-
-            assert len(article_text) > 100, f"Article text too short ({len(article_text)} chars)"
 
             artifact["stages"]["article_fetch"] = {
                 "raw_html_chars": len(html),
