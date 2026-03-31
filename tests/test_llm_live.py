@@ -52,15 +52,26 @@ class TestFullPipelineLive:
             story_ids = await fetch_top_stories(session)
             assert len(story_ids) > 0, "No stories returned from HN API"
 
-            # 2. Find a story with a URL (skip Ask HN etc.)
+            # 2. Find a story with a fetchable URL (skip Ask HN, 403s, timeouts)
             story = None
-            for sid in story_ids[:20]:
+            html = ""
+            for sid in story_ids[:30]:
                 item = await fetch_item(session, sid)
-                if item and item.get("url"):
-                    story = item
-                    break
+                if not item or not item.get("url"):
+                    continue
+                try:
+                    timeout = aiohttp.ClientTimeout(total=10)
+                    async with session.get(item["url"], timeout=timeout) as resp:
+                        if resp.status != 200:
+                            continue
+                        html = await resp.text()
+                        if len(html) > 500:
+                            story = item
+                            break
+                except Exception:
+                    continue
 
-            assert story is not None, "No story with URL found in top 20"
+            assert story is not None, "No fetchable story found in top 30"
 
             artifact["stages"]["hn_story"] = {
                 "id": story.get("id"),
@@ -70,16 +81,6 @@ class TestFullPipelineLive:
                 "comments": story.get("descendants", 0),
                 "author": story.get("by"),
             }
-
-            # 3. Fetch article text (basic extraction)
-            try:
-                timeout = aiohttp.ClientTimeout(total=10)
-                async with session.get(story["url"], timeout=timeout) as resp:
-                    if resp.status != 200:
-                        pytest.fail(f"Failed to fetch article: HTTP {resp.status}")
-                    html = await resp.text()
-            except Exception as exc:
-                pytest.fail(f"Failed to fetch article URL: {exc}")
 
             text = re.sub(r"<[^>]+>", " ", html)
             text = re.sub(r"\s+", " ", text).strip()

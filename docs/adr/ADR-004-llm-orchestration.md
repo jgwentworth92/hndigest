@@ -180,3 +180,26 @@ Future option: use a cheaper/faster model for summarization and a more capable m
 - Retry prompt is externalized in YAML alongside other prompts. Prompt engineering can iterate without code changes.
 - Different providers or models can be used for summarization vs validation by configuring separate adapter instances. This is not the default but is supported.
 - The validated_summary channel contract is unchanged: downstream consumers (report builder) receive only validated summaries. The retry is invisible to them.
+
+---
+
+## Amendment 1: Transient API retry with exponential backoff (added during Phase 4 implementation)
+
+The original ADR covered semantic retry (tighter prompt on validation failure) but not transient API error retry. A single 429 or 500 from the LLM provider would permanently fail the summary for a story, even though the error is temporary.
+
+### Decision
+
+The LLM adapter (`llm_mcp.py`) retries transient HTTP errors with exponential backoff. This is transparent to agents — they see either a successful (slower) call or an eventual failure after retries are exhausted.
+
+| Setting | Value |
+|---|---|
+| Retryable status codes | 429 (rate limit), 500 (internal error), 502 (bad gateway), 503 (service unavailable) |
+| Max retries | 3 |
+| Backoff schedule | 1s, 2s, 4s (exponential, base=1, factor=2) |
+| Non-retryable errors | 400, 401, 403, 404 — fail immediately |
+| Scope | All LLM API calls (generate_summary, validate_summary, orchestrator relevance) |
+| Configuration | Retry settings in `config/llm.yaml` under a `retry` key |
+
+### Why not a new ADR
+
+This is a detail of the LLM adapter's HTTP transport, not an architectural decision. It doesn't change the agent topology, message bus, or retry semantics at the validator level. ADR-004 already owns the LLM adapter's behavior.
