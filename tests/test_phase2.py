@@ -594,7 +594,7 @@ class TestFullPipelinePhase2:
             "timestamp": now.isoformat(),
             "source": "test",
             "payload": {
-                "id": story_id,
+                "story_id": story_id,
                 "score": hn_score,
                 "comments": comments,
                 "posted_at": posted_at,
