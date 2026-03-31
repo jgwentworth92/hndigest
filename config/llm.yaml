@@ -25,7 +25,7 @@ local:
   # API key from env: LOCAL_LLM_API_KEY (if needed)
 
 # Shared settings
-max_tokens: 1024
+max_tokens: 2048
 temperature: 0.3
 timeout_seconds: 30
 

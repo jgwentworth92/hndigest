@@ -109,6 +109,9 @@ class BaseAgent(abc.ABC):
                         self._shutdown = True
                         self.status = "stopping"
                         break
+                    # Skip all other system messages (heartbeats, etc.)
+                    # — they are not data messages for agent processing.
+                    continue
 
                 try:
                     await self.process(channel, message)
