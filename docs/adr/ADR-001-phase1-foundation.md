@@ -190,4 +190,33 @@ The system should be containerizable and runnable via Docker. This is a design c
 |---|---|
 | Target | Single-container deployment via Dockerfile and docker-compose.yaml |
 | Architecture fit | Single-process async design, file-based SQLite (volume-mountable), YAML config (mountable or env-overridable) |
-| Timeline | Dockerfile and compose file planned for Phase 4 alongside the FastAPI server |
+| Timeline | Dockerfile and compose file planned for Phase 6 alongside the FastAPI server |
+
+### Amendment 5: Base class filters system channel messages (post-Phase 4)
+
+A production bug was found where heartbeat messages on the system channel reached agents' `process()` methods, causing `KeyError` crashes. The base class run loop checked for shutdown messages but passed all other system messages (heartbeats) through to `process()`.
+
+| Decision | Detail |
+|---|---|
+| Fix | Base class `_run_loop` now calls `continue` after handling system channel messages, preventing heartbeats from reaching `process()` |
+| Root cause | The run loop only special-cased shutdown type, but heartbeats also arrive on the system channel. All system messages should be handled by the base class, not forwarded to agent-specific processing |
+| Lesson | The system channel is infrastructure, not data. Agents should never see system messages in their `process()` method |
+
+### Amendment 6: Collector default max_stories reduced to 10 (post-Phase 4)
+
+The collector originally processed all story IDs returned by the HN API (up to 500 per endpoint). This was excessive for development, testing, and initial operation.
+
+| Decision | Detail |
+|---|---|
+| Change | New `max_stories` parameter on `CollectorAgent.__init__`, default 10 |
+| Rationale | 500 stories per poll overwhelms downstream agents during development. 10 is sufficient for testing and initial use. Configurable for production. |
+
+### Amendment 7: python-dotenv as runtime dependency (post-Phase 4)
+
+The CLI `__main__.py` was not loading `.env` files at startup, causing LLM API keys to be missing at runtime (Gemini 403 errors). Tests loaded `.env` via `conftest.py` which masked the issue.
+
+| Decision | Detail |
+|---|---|
+| Fix | Added `python-dotenv` as a runtime dependency (was dev-only). `main()` calls `load_dotenv()` before any agent initialization. |
+| Root cause | Tests used conftest.py to load .env, but the production CLI path did not |
+| Lesson | If tests need env loading, the production path needs it too |
