@@ -109,6 +109,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     """Parse arguments, configure logging, and dispatch to the command handler."""
+    from pathlib import Path
+
+    from dotenv import load_dotenv
+
+    load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
