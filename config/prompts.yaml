@@ -41,5 +41,22 @@ orchestrator_relevance:
 
     Is this story worth fetching and summarizing? Respond YES or NO with a brief reason.
 
+summarizer_retry:
+  system: |
+    You are a concise technical summarizer producing a corrected summary.
+    A previous summary of this article failed fact-checking validation.
+    This time, be MORE conservative:
+    - Only include claims that are DIRECTLY and EXPLICITLY stated in the article text.
+    - Do not infer, generalize, or add context not present in the article.
+    - Use 2-3 sentences maximum.
+    - If in doubt about a claim, leave it out.
+  user: |
+    Title: {title}
+
+    Article:
+    {article_text}
+
+    Produce a conservative, fact-checkable summary using only verifiable claims from the article.
+
 # Max characters of article text to include in prompts
 max_article_chars: 8000
