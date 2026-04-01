@@ -32,6 +32,7 @@ from hndigest.bus import (
     MessageBus,
 )
 from hndigest.db import init_db
+from hndigest.models import BusMessage, HeartbeatPayload
 
 _WORKTREE_ROOT = Path(__file__).resolve().parents[1]
 _MIGRATIONS_DIR = _WORKTREE_ROOT / "db" / "migrations"
@@ -80,7 +81,7 @@ class TestCollectorOutputFeedsAllAgents:
             collector._session = None
 
         # Capture at least one real story message from the bus
-        story_messages: list[dict[str, Any]] = []
+        story_messages: list[BusMessage] = []
         while not story_queue.empty():
             story_messages.append(story_queue.get_nowait())
 
@@ -100,27 +101,27 @@ class TestCollectorOutputFeedsAllAgents:
             try:
                 await scorer.process(CHANNEL_STORY, msg)
             except Exception as exc:
-                scorer_errors.append(f"story_id={msg['payload'].get('story_id')}: {exc}")
+                scorer_errors.append(f"story_id={msg.payload.story_id}: {exc}")
 
             try:
                 await categorizer.process(CHANNEL_STORY, msg)
             except Exception as exc:
-                categorizer_errors.append(f"story_id={msg['payload'].get('story_id')}: {exc}")
+                categorizer_errors.append(f"story_id={msg.payload.story_id}: {exc}")
 
             try:
                 await orchestrator.process(CHANNEL_STORY, msg)
             except Exception as exc:
-                orchestrator_errors.append(f"story_id={msg['payload'].get('story_id')}: {exc}")
+                orchestrator_errors.append(f"story_id={msg.payload.story_id}: {exc}")
 
         # Now feed the score messages to orchestrator (it needs scores to dispatch)
-        score_messages: list[dict[str, Any]] = []
+        score_messages: list[BusMessage] = []
         while not score_queue.empty():
             score_msg = score_queue.get_nowait()
             score_messages.append(score_msg)
             try:
                 await orchestrator.process(CHANNEL_SCORE, score_msg)
             except Exception as exc:
-                orchestrator_errors.append(f"score for story_id={score_msg['payload'].get('story_id')}: {exc}")
+                orchestrator_errors.append(f"score for story_id={score_msg.payload.story_id}: {exc}")
 
         assert not scorer_errors, f"Scorer errors on real collector output:\n" + "\n".join(scorer_errors)
         assert not categorizer_errors, f"Categorizer errors on real collector output:\n" + "\n".join(categorizer_errors)
@@ -151,7 +152,7 @@ class TestCollectorOutputFeedsAllAgents:
             "scorer_errors": scorer_errors,
             "categorizer_errors": categorizer_errors,
             "orchestrator_errors": orchestrator_errors,
-            "sample_story_payload": story_messages[0]["payload"] if story_messages else {},
+            "sample_story_payload": story_messages[0].payload.model_dump() if story_messages else {},
         }
         artifact_path = _write_artifact("integration_pipeline", artifact)
         print(f"\n--- Artifact: {artifact_path}")
@@ -184,7 +185,7 @@ class TestCollectorOutputFeedsFetcher:
             await collector._session.close()
             collector._session = None
 
-        story_messages: list[dict[str, Any]] = []
+        story_messages: list[BusMessage] = []
         while not story_queue.empty():
             story_messages.append(story_queue.get_nowait())
 
@@ -195,7 +196,7 @@ class TestCollectorOutputFeedsFetcher:
         for msg in story_messages[:5]:
             await scorer.process(CHANNEL_STORY, msg)
 
-        score_messages: list[dict[str, Any]] = []
+        score_messages: list[BusMessage] = []
         while not score_queue.empty():
             score_messages.append(score_queue.get_nowait())
 
@@ -207,7 +208,7 @@ class TestCollectorOutputFeedsFetcher:
             await orchestrator.process(CHANNEL_SCORE, msg)
 
         # Capture fetch requests
-        fetch_requests: list[dict[str, Any]] = []
+        fetch_requests: list[BusMessage] = []
         while not fetch_request_queue.empty():
             fetch_requests.append(fetch_request_queue.get_nowait())
 
@@ -246,7 +247,7 @@ class TestCollectorOutputFeedsFetcher:
             "fetch_requests_tested": min(3, len(fetch_requests)),
             "articles_produced": articles_produced,
             "fetcher_errors": fetcher_errors,
-            "sample_fetch_request_payload": fetch_requests[0]["payload"] if fetch_requests else {},
+            "sample_fetch_request_payload": fetch_requests[0].payload.model_dump() if fetch_requests else {},
         }
         artifact_path = _write_artifact("integration_fetcher", artifact)
         print(f"\n--- Artifact: {artifact_path}")
@@ -281,7 +282,7 @@ class TestFullPipelineEndToEnd:
         finally:
             await collector._session.close()
 
-        story_msgs = []
+        story_msgs: list[BusMessage] = []
         while not story_queue.empty():
             story_msgs.append(story_queue.get_nowait())
         stages["collected"] = len(story_msgs)
@@ -292,7 +293,7 @@ class TestFullPipelineEndToEnd:
         for msg in story_msgs[:5]:
             await scorer.process(CHANNEL_STORY, msg)
 
-        score_msgs = []
+        score_msgs: list[BusMessage] = []
         while not score_queue.empty():
             score_msgs.append(score_queue.get_nowait())
         stages["scored"] = len(score_msgs)
@@ -304,7 +305,7 @@ class TestFullPipelineEndToEnd:
         for msg in score_msgs:
             await orchestrator.process(CHANNEL_SCORE, msg)
 
-        fetch_reqs = []
+        fetch_reqs: list[BusMessage] = []
         while not fetch_request_queue.empty():
             fetch_reqs.append(fetch_request_queue.get_nowait())
         stages["fetch_requests"] = len(fetch_reqs)
@@ -323,7 +324,7 @@ class TestFullPipelineEndToEnd:
         finally:
             await fetcher._session.close()
 
-        article_msgs = []
+        article_msgs: list[BusMessage] = []
         while not article_queue.empty():
             article_msgs.append(article_queue.get_nowait())
         stages["articles_fetched"] = len(article_msgs)
@@ -333,7 +334,7 @@ class TestFullPipelineEndToEnd:
         for amsg in article_msgs:
             await orchestrator.process(CHANNEL_ARTICLE, amsg)
 
-        summarize_reqs = []
+        summarize_reqs: list[BusMessage] = []
         while not summarize_request_queue.empty():
             summarize_reqs.append(summarize_request_queue.get_nowait())
         stages["summarize_requests"] = len(summarize_reqs)
@@ -353,7 +354,7 @@ class TestFullPipelineEndToEnd:
         finally:
             await summarizer._llm.close()
 
-        summary_msgs = []
+        summary_msgs: list[BusMessage] = []
         while not summary_queue.empty():
             summary_msgs.append(summary_queue.get_nowait())
         stages["summaries_generated"] = len(summary_msgs)
@@ -373,20 +374,20 @@ class TestFullPipelineEndToEnd:
         finally:
             await validator._llm.close()
 
-        validated_msgs = []
+        validated_msgs: list[BusMessage] = []
         while not validated_summary_queue.empty():
             validated_msgs.append(validated_summary_queue.get_nowait())
         stages["validated_summaries"] = len(validated_msgs)
 
         # Check final DB state
-        story_id = story_msgs[0]["payload"]["story_id"]
+        story_id = story_msgs[0].payload.story_id
         sum_row = conn.execute(
             "SELECT status FROM summaries WHERE story_id = ?", (story_id,)
         ).fetchone()
         stages["final_summary_status"] = sum_row[0] if sum_row else "none"
 
         if validated_msgs:
-            stages["validated_summary_text"] = validated_msgs[0]["payload"].get("summary_text", "")[:200]
+            stages["validated_summary_text"] = validated_msgs[0].payload.summary_text[:200]
 
         artifact_path = _write_artifact("integration_full_pipeline", {
             "test": "test_complete_pipeline_with_real_data",
@@ -424,10 +425,10 @@ class TestSystemChannelDoesNotCrashAgents:
                     subscriptions=[CHANNEL_STORY],
                     publications=[],
                 )
-                self.processed: list[dict[str, Any]] = []
+                self.processed: list[BusMessage] = []
 
-            async def process(self, channel: str, message: dict[str, Any]) -> None:
-                self.processed.append({"channel": channel, "payload": message["payload"]})
+            async def process(self, channel: str, message: BusMessage) -> None:
+                self.processed.append(message)
 
         supervisor = Supervisor(db_path=":memory:")
         temp_bus = MessageBus()
@@ -436,13 +437,17 @@ class TestSystemChannelDoesNotCrashAgents:
 
         await supervisor.start()
 
-        # Publish a heartbeat to system channel — this used to crash agents
-        heartbeat: dict[str, Any] = {
-            "type": "heartbeat",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "source": "supervisor",
-            "payload": {"agent": "dummy", "status": "running", "messages_processed": 0},
-        }
+        # Publish a heartbeat to system channel -- this used to crash agents
+        heartbeat = BusMessage(
+            type="heartbeat",
+            timestamp=datetime.now(timezone.utc),
+            source="supervisor",
+            payload=HeartbeatPayload(
+                agent="dummy",
+                status="running",
+                messages_processed=0,
+            ),
+        )
         await supervisor.bus.publish("system", heartbeat)
 
         # Give agent time to process (or not crash)

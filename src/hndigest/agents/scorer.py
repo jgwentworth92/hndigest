@@ -12,12 +12,11 @@ import logging
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
-
-import yaml
 
 from hndigest.agents.base import BaseAgent
 from hndigest.bus import CHANNEL_SCORE, CHANNEL_STORY, MessageBus
+from hndigest.config import ScoringConfig
+from hndigest.models import BusMessage, ScoreComponents, ScorePayload, StoryPayload
 
 logger = logging.getLogger(__name__)
 
@@ -52,31 +51,14 @@ class ScorerAgent(BaseAgent):
             publications=[CHANNEL_SCORE],
         )
         self.db_conn = db_conn
-        self._config = self._load_config(config_path)
+        path = Path(config_path) if config_path else _DEFAULT_CONFIG_PATH
+        self._config: ScoringConfig = ScoringConfig.from_yaml(path)
         logger.info(
             "ScorerAgent initialized with weights: %s",
-            self._config["weights"],
+            self._config.weights,
         )
 
-    def _load_config(self, config_path: str | Path | None) -> dict[str, Any]:
-        """Load and return the scoring configuration from YAML.
-
-        Args:
-            config_path: Explicit path, or None to use the default.
-
-        Returns:
-            Parsed YAML config as a dict.
-
-        Raises:
-            FileNotFoundError: If the config file does not exist.
-        """
-        path = Path(config_path) if config_path else _DEFAULT_CONFIG_PATH
-        logger.debug("Loading scoring config from %s", path)
-        with open(path, "r", encoding="utf-8") as fh:
-            config: dict[str, Any] = yaml.safe_load(fh)
-        return config
-
-    async def process(self, channel: str, message: dict[str, Any]) -> None:
+    async def process(self, channel: str, message: BusMessage) -> None:
         """Score a story received from the story channel.
 
         Extracts story data from the message payload, computes the four
@@ -85,18 +67,18 @@ class ScorerAgent(BaseAgent):
 
         Args:
             channel: The channel the message arrived on.
-            message: The bus message dict with a ``payload`` containing
-                story fields (id, score, comments, posted_at, endpoints).
+            message: The typed bus message envelope containing a
+                StoryPayload with story fields.
         """
         if channel != CHANNEL_STORY:
             return
 
-        payload: dict[str, Any] = message["payload"]
-        story_id: int = payload["story_id"]
-        score: int = payload.get("score", 0)
-        comments: int = payload.get("comments", 0)
-        posted_at_str: str = payload["posted_at"]
-        endpoints_raw = payload.get("endpoints", "[]")
+        payload: StoryPayload = message.payload  # type: ignore[assignment]
+        story_id: int = payload.story_id
+        score: int = payload.score
+        comments: int = payload.comments
+        posted_at_str: str = payload.posted_at
+        endpoints_raw: list[str] | str = payload.endpoints
 
         # Parse posted_at timestamp
         posted_at = datetime.fromisoformat(posted_at_str)
@@ -130,12 +112,12 @@ class ScorerAgent(BaseAgent):
         recency = self._compute_recency(posted_at)
 
         # Weighted composite
-        weights = self._config["weights"]
+        weights = self._config.weights
         composite = (
-            weights["score_velocity"] * score_velocity
-            + weights["comment_velocity"] * comment_velocity
-            + weights["front_page_presence"] * front_page_presence
-            + weights["recency"] * recency
+            weights.score_velocity * score_velocity
+            + weights.comment_velocity * comment_velocity
+            + weights.front_page_presence * front_page_presence
+            + weights.recency * recency
         )
         composite = max(0.0, min(100.0, composite))
 
@@ -170,20 +152,17 @@ class ScorerAgent(BaseAgent):
         )
 
         # Publish to score channel
-        await self.publish(
-            CHANNEL_SCORE,
-            {
-                "story_id": story_id,
-                "composite": round(composite, 2),
-                "components": {
-                    "score_velocity": round(score_velocity, 2),
-                    "comment_velocity": round(comment_velocity, 2),
-                    "front_page_presence": front_page_presence,
-                    "recency": round(recency, 2),
-                },
-            },
-            msg_type="score",
+        score_payload = ScorePayload(
+            story_id=story_id,
+            composite=round(composite, 2),
+            components=ScoreComponents(
+                score_velocity=round(score_velocity, 2),
+                comment_velocity=round(comment_velocity, 2),
+                front_page_presence=front_page_presence,
+                recency=round(recency, 2),
+            ),
         )
+        await self.publish(CHANNEL_SCORE, score_payload, msg_type="score")
 
     async def _compute_percentile_rank(
         self, value: float, component: str
@@ -203,7 +182,7 @@ class ScorerAgent(BaseAgent):
         Returns:
             A normalized score between 0 and 100.
         """
-        baseline_days: int = self._config.get("baseline_days", 7)
+        baseline_days: int = self._config.baseline_days
         now = datetime.now(timezone.utc)
 
         # Build cutoff timestamp by subtracting baseline_days
@@ -266,7 +245,7 @@ class ScorerAgent(BaseAgent):
         Returns:
             Scaled front page presence score.
         """
-        scale: dict[int, int] = self._config["front_page_scale"]
+        scale: dict[int, int] = self._config.front_page_scale
         if endpoint_count <= 0:
             return 0.0
         # Find the matching or highest threshold
@@ -291,7 +270,7 @@ class ScorerAgent(BaseAgent):
         now = datetime.now(timezone.utc)
         hours_old = max(0.0, (now - posted_at).total_seconds() / 3600.0)
 
-        decay: dict[int, int] = self._config["recency_decay"]
+        decay: dict[int, int] = self._config.recency_decay
         # Sort breakpoints by hours ascending
         breakpoints = sorted(decay.items(), key=lambda x: x[0])
 

@@ -1,5 +1,7 @@
 """Abstract base class for all hndigest agents."""
 
+from __future__ import annotations
+
 import abc
 import asyncio
 import logging
@@ -7,6 +9,7 @@ import time
 from datetime import datetime, timezone
 
 from hndigest.bus import MessageBus
+from hndigest.models import BusMessage, HeartbeatPayload, PayloadType
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +45,7 @@ class BaseAgent(abc.ABC):
         self.messages_processed: int = 0
         self.status: str = "stopped"
         self._shutdown: bool = False
-        self._queues: dict[str, asyncio.Queue] = {}
+        self._queues: dict[str, asyncio.Queue[BusMessage]] = {}
 
     async def start(self) -> None:
         """Subscribe to declared channels plus the system channel, then run.
@@ -71,7 +74,7 @@ class BaseAgent(abc.ABC):
 
         while not self._shutdown:
             # Build tasks for getting the next message from each queue
-            get_tasks: dict[asyncio.Task, str] = {}
+            get_tasks: dict[asyncio.Task[BusMessage], str] = {}
             for channel, queue in self._queues.items():
                 task = asyncio.create_task(queue.get())
                 get_tasks[task] = channel
@@ -98,19 +101,20 @@ class BaseAgent(abc.ABC):
             for task in done:
                 channel = get_tasks[task]
                 try:
-                    message = task.result()
+                    message: BusMessage = task.result()
                 except Exception:
                     logger.exception("%s: error retrieving message from %s", self.name, channel)
                     continue
 
-                if channel == SYSTEM_CHANNEL and isinstance(message, dict):
-                    if message.get("type") == "shutdown":
-                        logger.info("%s received shutdown signal", self.name)
-                        self._shutdown = True
-                        self.status = "stopping"
-                        break
-                    # Skip all other system messages (heartbeats, etc.)
-                    # — they are not data messages for agent processing.
+                if channel == SYSTEM_CHANNEL and message.type == "shutdown":
+                    logger.info("%s received shutdown signal", self.name)
+                    self._shutdown = True
+                    self.status = "stopping"
+                    break
+
+                # Skip all other system messages (heartbeats, etc.)
+                # — they are not data messages for agent processing.
+                if channel == SYSTEM_CHANNEL:
                     continue
 
                 try:
@@ -137,7 +141,7 @@ class BaseAgent(abc.ABC):
         for channel, queue in self._queues.items():
             while not queue.empty():
                 try:
-                    message = queue.get_nowait()
+                    message: BusMessage = queue.get_nowait()
                 except asyncio.QueueEmpty:
                     break
 
@@ -163,21 +167,16 @@ class BaseAgent(abc.ABC):
 
     async def _emit_heartbeat(self) -> None:
         """Publish a heartbeat message to the system channel."""
-        heartbeat = {
-            "type": "heartbeat",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "source": self.name,
-            "payload": {
-                "agent": self.name,
-                "status": self.status,
-                "messages_processed": self.messages_processed,
-            },
-        }
-        await self.bus.publish(SYSTEM_CHANNEL, heartbeat)
+        payload = HeartbeatPayload(
+            agent=self.name,
+            status=self.status,
+            messages_processed=self.messages_processed,
+        )
+        await self.publish(SYSTEM_CHANNEL, payload, "heartbeat")
         logger.debug("%s emitted heartbeat", self.name)
 
     @abc.abstractmethod
-    async def process(self, channel: str, message: dict) -> None:
+    async def process(self, channel: str, message: BusMessage) -> None:
         """Handle a single inbound message.
 
         Concrete agents override this with their domain logic: persist
@@ -185,22 +184,22 @@ class BaseAgent(abc.ABC):
 
         Args:
             channel: The channel the message arrived on.
-            message: The message payload dict.
+            message: The typed bus message envelope.
         """
 
-    async def publish(self, channel: str, payload: dict, msg_type: str) -> None:
-        """Build a properly formatted message and publish it to the bus.
+    async def publish(self, channel: str, payload: PayloadType, msg_type: str) -> None:
+        """Build a properly formatted BusMessage and publish it to the bus.
 
         Args:
             channel: Target channel name.
-            payload: The domain-specific data to include.
+            payload: The typed payload model to include.
             msg_type: Message type identifier (e.g. "story", "score").
         """
-        message = {
-            "type": msg_type,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "source": self.name,
-            "payload": payload,
-        }
+        message = BusMessage(
+            type=msg_type,
+            timestamp=datetime.now(timezone.utc),
+            source=self.name,
+            payload=payload,
+        )
         await self.bus.publish(channel, message)
         logger.debug("%s published %s to %s", self.name, msg_type, channel)

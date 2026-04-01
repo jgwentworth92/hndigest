@@ -18,6 +18,7 @@ from typing import Any
 from hndigest.agents.base import BaseAgent
 from hndigest.bus import CHANNEL_SUMMARY, CHANNEL_VALIDATED_SUMMARY, MessageBus
 from hndigest.mcp.llm_mcp import LLMAdapter
+from hndigest.models import BusMessage, SummaryPayload, ValidatedSummaryPayload
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +66,7 @@ class ValidatorAgent(BaseAgent):
             await self._llm.close()
             logger.info("validator: LLM adapter closed")
 
-    async def process(self, channel: str, message: dict[str, Any]) -> None:
+    async def process(self, channel: str, message: BusMessage) -> None:
         """Handle an inbound summary message.
 
         Extracts the summary and source article, validates faithfulness
@@ -74,12 +75,12 @@ class ValidatorAgent(BaseAgent):
 
         Args:
             channel: The channel the message arrived on.
-            message: The message payload dict.
+            message: The typed bus message envelope containing a SummaryPayload.
         """
-        payload = message.get("payload", {})
-        story_id: int = payload["story_id"]
-        summary_text: str = payload["summary_text"]
-        source_text_hash: str = payload["source_text_hash"]
+        payload: SummaryPayload = message.payload  # type: ignore[assignment]
+        story_id: int = payload.story_id
+        summary_text: str = payload.summary_text
+        source_text_hash: str = payload.source_text_hash
 
         logger.info("validator: processing summary for story_id=%d", story_id)
 
@@ -104,13 +105,14 @@ class ValidatorAgent(BaseAgent):
             self._update_summary_status(story_id, "validated")
             if summary_id is not None:
                 self._persist_validation(summary_id, "pass", details)
+            validated_payload = ValidatedSummaryPayload(
+                story_id=story_id,
+                summary_text=summary_text,
+                validation_result="pass",
+            )
             await self.publish(
                 CHANNEL_VALIDATED_SUMMARY,
-                {
-                    "story_id": story_id,
-                    "summary_text": summary_text,
-                    "validation_result": "pass",
-                },
+                validated_payload,
                 msg_type="validated_summary",
             )
             return
@@ -142,13 +144,14 @@ class ValidatorAgent(BaseAgent):
             summary_id = self._get_summary_id(story_id)
             if summary_id is not None:
                 self._persist_validation(summary_id, "pass", retry_details)
+            retry_validated_payload = ValidatedSummaryPayload(
+                story_id=story_id,
+                summary_text=retry_summary,
+                validation_result="pass",
+            )
             await self.publish(
                 CHANNEL_VALIDATED_SUMMARY,
-                {
-                    "story_id": story_id,
-                    "summary_text": retry_summary,
-                    "validation_result": "pass",
-                },
+                retry_validated_payload,
                 msg_type="validated_summary",
             )
         else:

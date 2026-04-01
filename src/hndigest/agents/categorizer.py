@@ -1,16 +1,17 @@
 """Categorizer agent — assigns topic categories to stories via deterministic rules."""
 
+from __future__ import annotations
+
 import logging
 import pathlib
 import sqlite3
 from datetime import datetime, timezone
-from typing import Any
 from urllib.parse import urlparse
-
-import yaml
 
 from hndigest.agents.base import BaseAgent
 from hndigest.bus import CHANNEL_CATEGORY, CHANNEL_STORY, MessageBus
+from hndigest.config import CategoriesConfig, CategoryRule
+from hndigest.models import BusMessage, CategoryAssignment, CategoryPayload, StoryPayload
 
 logger = logging.getLogger(__name__)
 
@@ -49,35 +50,16 @@ class CategorizerAgent(BaseAgent):
         self.db_conn = db_conn
 
         resolved_path = pathlib.Path(config_path) if config_path else _DEFAULT_CONFIG_PATH
-        self._config = self._load_config(resolved_path)
-        self._categories: dict[str, dict[str, list[str]]] = self._config.get("categories", {})
-        self._hn_type_mappings: dict[str, str] = self._config.get("hn_type_mappings", {})
-        self._default_category: str = self._config.get("default_category", "uncategorized")
+        self._config: CategoriesConfig = CategoriesConfig.from_yaml(resolved_path)
+        self._categories: dict[str, CategoryRule] = self._config.categories
+        self._hn_type_mappings: dict[str, str] = self._config.hn_type_mappings
+        self._default_category: str = self._config.default_category
 
-    @staticmethod
-    def _load_config(path: pathlib.Path) -> dict[str, Any]:
-        """Load and return the categories YAML config.
-
-        Args:
-            path: Absolute or relative path to the YAML file.
-
-        Returns:
-            Parsed config dict.
-
-        Raises:
-            FileNotFoundError: If the config file does not exist.
-        """
-        logger.info("Loading category config from %s", path)
-        with open(path, "r", encoding="utf-8") as fh:
-            config = yaml.safe_load(fh)
-        if not isinstance(config, dict):
-            raise ValueError(f"Category config must be a YAML mapping, got {type(config).__name__}")
         logger.info(
             "Loaded %d categories and %d HN type mappings",
-            len(config.get("categories", {})),
-            len(config.get("hn_type_mappings", {})),
+            len(self._categories),
+            len(self._hn_type_mappings),
         )
-        return config
 
     @staticmethod
     def _extract_domain(url: str | None) -> str | None:
@@ -101,7 +83,7 @@ class CategorizerAgent(BaseAgent):
             logger.debug("Failed to parse URL: %s", url)
         return None
 
-    async def process(self, channel: str, message: dict[str, Any]) -> None:
+    async def process(self, channel: str, message: BusMessage) -> None:
         """Categorize a story and persist/publish the results.
 
         Runs three rule types in order, collecting all matching categories:
@@ -115,50 +97,46 @@ class CategorizerAgent(BaseAgent):
 
         Args:
             channel: The channel the message arrived on.
-            message: The message payload dict containing story data.
+            message: The typed bus message envelope containing a StoryPayload.
         """
-        payload = message.get("payload", {})
-        story_id: int = payload.get("story_id")
-        title: str = payload.get("title", "")
-        url: str | None = payload.get("url")
-        hn_type: str = payload.get("hn_type", "story")
+        payload: StoryPayload = message.payload  # type: ignore[assignment]
+        story_id: int = payload.story_id
+        title: str = payload.title
+        url: str | None = payload.url
+        hn_type: str = payload.hn_type
 
-        if story_id is None:
-            logger.warning("categorizer: received message without story_id, skipping")
-            return
-
-        matched: list[dict[str, str]] = []
+        matched: list[CategoryAssignment] = []
 
         # 1. Domain mapping
         domain = self._extract_domain(url)
         if domain:
             for cat_name, cat_rules in self._categories.items():
-                cat_domains = cat_rules.get("domains", [])
+                cat_domains = cat_rules.domains
                 if domain in cat_domains:
-                    matched.append({"category": cat_name, "method": "domain"})
+                    matched.append(CategoryAssignment(category=cat_name, method="domain"))
 
         # 2. Keyword matching
         title_lower = title.lower()
         for cat_name, cat_rules in self._categories.items():
-            cat_keywords = cat_rules.get("keywords", [])
+            cat_keywords = cat_rules.keywords
             for keyword in cat_keywords:
                 if keyword.lower() in title_lower:
                     # Avoid duplicate category from same rule type
                     if not any(
-                        m["category"] == cat_name and m["method"] == "keyword"
+                        m.category == cat_name and m.method == "keyword"
                         for m in matched
                     ):
-                        matched.append({"category": cat_name, "method": "keyword"})
+                        matched.append(CategoryAssignment(category=cat_name, method="keyword"))
                     break
 
         # 3. HN type mapping
         mapped_category = self._hn_type_mappings.get(hn_type)
         if mapped_category:
-            matched.append({"category": mapped_category, "method": "hn_type"})
+            matched.append(CategoryAssignment(category=mapped_category, method="hn_type"))
 
         # Default if nothing matched
         if not matched:
-            matched.append({"category": self._default_category, "method": "uncategorized"})
+            matched.append(CategoryAssignment(category=self._default_category, method="uncategorized"))
 
         # Persist to categories table
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -167,12 +145,12 @@ class CategorizerAgent(BaseAgent):
                 self.db_conn.execute(
                     """INSERT INTO categories (story_id, category, method, categorized_at)
                        VALUES (?, ?, ?, ?)""",
-                    (story_id, entry["category"], entry["method"], now_iso),
+                    (story_id, entry.category, entry.method, now_iso),
                 )
             except sqlite3.Error:
                 logger.exception(
                     "categorizer: failed to insert category %s for story %d",
-                    entry["category"],
+                    entry.category,
                     story_id,
                 )
         try:
@@ -181,16 +159,13 @@ class CategorizerAgent(BaseAgent):
             logger.exception("categorizer: failed to commit categories for story %d", story_id)
 
         # Publish to category channel
-        await self.publish(
-            CHANNEL_CATEGORY,
-            {
-                "story_id": story_id,
-                "categories": matched,
-            },
-            msg_type="category",
+        category_payload = CategoryPayload(
+            story_id=story_id,
+            categories=matched,
         )
+        await self.publish(CHANNEL_CATEGORY, category_payload, msg_type="category")
 
-        category_names = [m["category"] for m in matched]
+        category_names = [m.category for m in matched]
         logger.info(
             "categorizer: story %d -> %s",
             story_id,

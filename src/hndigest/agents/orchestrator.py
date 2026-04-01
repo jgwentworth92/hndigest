@@ -15,8 +15,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 from hndigest.agents.base import BaseAgent
 from hndigest.bus import (
     CHANNEL_ARTICLE,
@@ -25,6 +23,16 @@ from hndigest.bus import (
     CHANNEL_STORY,
     CHANNEL_SUMMARIZE_REQUEST,
     MessageBus,
+)
+from hndigest.config import OrchestratorConfig
+from hndigest.models import (
+    ArticlePayload,
+    BusMessage,
+    FetchRequestPayload,
+    OrchestratorDecisionPayload,
+    ScorePayload,
+    StoryPayload,
+    SummarizeRequestPayload,
 )
 
 logger = logging.getLogger(__name__)
@@ -62,22 +70,23 @@ class OrchestratorAgent(BaseAgent):
             publications=[CHANNEL_FETCH_REQUEST, CHANNEL_SUMMARIZE_REQUEST],
         )
         self.db_conn = db_conn
-        self._config = self._load_config(config_path)
+        path = Path(config_path) if config_path else _DEFAULT_CONFIG_PATH
+        self._config: OrchestratorConfig = OrchestratorConfig.from_yaml(path)
 
         # In-memory state: stories awaiting their score
-        self._pending_stories: dict[int, dict[str, Any]] = {}
+        self._pending_stories: dict[int, StoryPayload] = {}
 
         # Budget tracking
-        self._daily_budget_remaining: int = self._config["budget"]["daily_token_budget"]
+        self._daily_budget_remaining: int = self._config.budget.daily_token_budget
         self._budget_reset_date: str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        self._tokens_per_article: int = self._config["budget"]["tokens_per_article"]
+        self._tokens_per_article: int = self._config.budget.tokens_per_article
 
         # Priority thresholds
-        self._min_composite_score: float = self._config["priority"]["min_composite_score"]
-        self._ambiguity_range: float = self._config["priority"]["ambiguity_range"]
+        self._min_composite_score: float = self._config.priority.min_composite_score
+        self._ambiguity_range: float = self._config.priority.ambiguity_range
 
         # Optional LLM mode
-        self._use_llm: bool = self._config["llm"]["use_llm"]
+        self._use_llm: bool = self._config.llm.use_llm
         self._llm_adapter: Any = None
 
         if self._use_llm:
@@ -93,24 +102,6 @@ class OrchestratorAgent(BaseAgent):
             self._use_llm,
         )
 
-    def _load_config(self, config_path: str | Path | None) -> dict[str, Any]:
-        """Load and return the orchestrator configuration from YAML.
-
-        Args:
-            config_path: Explicit path, or None to use the default.
-
-        Returns:
-            Parsed YAML config as a dict.
-
-        Raises:
-            FileNotFoundError: If the config file does not exist.
-        """
-        path = Path(config_path) if config_path else _DEFAULT_CONFIG_PATH
-        logger.debug("Loading orchestrator config from %s", path)
-        with open(path, "r", encoding="utf-8") as fh:
-            config: dict[str, Any] = yaml.safe_load(fh)
-        return config
-
     def _init_llm_adapter(self) -> None:
         """Initialize the LLM adapter for ambiguous-case relevance checks."""
         from hndigest.mcp.llm_mcp import LLMAdapter
@@ -118,23 +109,23 @@ class OrchestratorAgent(BaseAgent):
         self._llm_adapter = LLMAdapter()
         logger.info("OrchestratorAgent LLM mode enabled")
 
-    async def process(self, channel: str, message: dict[str, Any]) -> None:
+    async def process(self, channel: str, message: BusMessage) -> None:
         """Route an inbound message based on its channel.
 
         Args:
             channel: The channel the message arrived on.
-            message: The bus message dict with a ``payload`` containing
-                channel-specific fields.
+            message: The typed bus message envelope containing a
+                channel-specific payload.
         """
-        payload: dict[str, Any] = message["payload"]
-
         if channel == CHANNEL_STORY:
-            story_id: int = payload["story_id"]
+            payload: StoryPayload = message.payload  # type: ignore[assignment]
+            story_id: int = payload.story_id
             self._pending_stories[story_id] = payload
             logger.debug("Stored pending story %d", story_id)
 
         elif channel == CHANNEL_SCORE:
-            story_id = payload["story_id"]
+            score_payload: ScorePayload = message.payload  # type: ignore[assignment]
+            story_id = score_payload.story_id
             story = self._pending_stories.get(story_id)
             if story is None:
                 logger.warning(
@@ -142,24 +133,24 @@ class OrchestratorAgent(BaseAgent):
                     story_id,
                 )
                 return
-            await self._evaluate_and_dispatch(story, payload)
+            await self._evaluate_and_dispatch(story, score_payload)
 
         elif channel == CHANNEL_ARTICLE:
-            story_id = payload["story_id"]
+            article_payload: ArticlePayload = message.payload  # type: ignore[assignment]
+            story_id = article_payload.story_id
+            summarize_payload = SummarizeRequestPayload(
+                story_id=story_id,
+                priority=0.0,
+            )
             await self.publish(
                 CHANNEL_SUMMARIZE_REQUEST,
-                {
-                    "story_id": story_id,
-                    "title": payload.get("title", ""),
-                    "url": payload.get("url", ""),
-                    "article_text": payload.get("article_text", ""),
-                },
+                summarize_payload,
                 msg_type="summarize_request",
             )
             logger.info("Published summarize_request for story %d", story_id)
 
     async def _evaluate_and_dispatch(
-        self, story: dict[str, Any], score_data: dict[str, Any]
+        self, story: StoryPayload, score_data: ScorePayload
     ) -> None:
         """Evaluate a story's priority and decide whether to dispatch it.
 
@@ -167,12 +158,11 @@ class OrchestratorAgent(BaseAgent):
         ambiguous scores, and budget enforcement before dispatching.
 
         Args:
-            story: The story payload dict stored from the story channel.
-            score_data: The score payload dict from the score channel,
-                containing at least ``story_id`` and ``composite``.
+            story: The StoryPayload stored from the story channel.
+            score_data: The ScorePayload from the score channel.
         """
-        story_id: int = score_data["story_id"]
-        composite: float = score_data["composite"]
+        story_id: int = score_data.story_id
+        composite: float = score_data.composite
 
         # Reset budget if we've crossed into a new UTC day
         self._reset_budget_if_needed()
@@ -241,7 +231,7 @@ class OrchestratorAgent(BaseAgent):
     async def _try_dispatch(
         self,
         story_id: int,
-        story: dict[str, Any],
+        story: StoryPayload,
         composite: float,
         used_llm: bool,
     ) -> None:
@@ -249,7 +239,7 @@ class OrchestratorAgent(BaseAgent):
 
         Args:
             story_id: The HN story ID.
-            story: The story payload dict.
+            story: The StoryPayload from the story channel.
             composite: The composite priority score.
             used_llm: Whether LLM was consulted for this decision.
         """
@@ -270,14 +260,16 @@ class OrchestratorAgent(BaseAgent):
             return
 
         # Dispatch: publish fetch_request and deduct budget
+        fetch_payload = FetchRequestPayload(
+            story_id=story_id,
+            url=story.url,
+            hn_text=story.hn_text,
+            title=story.title,
+            priority=composite,
+        )
         await self.publish(
             CHANNEL_FETCH_REQUEST,
-            {
-                "story_id": story_id,
-                "title": story.get("title", ""),
-                "url": story.get("url", ""),
-                "priority": composite,
-            },
+            fetch_payload,
             msg_type="fetch_request",
         )
         self._daily_budget_remaining -= self._tokens_per_article
@@ -333,7 +325,7 @@ class OrchestratorAgent(BaseAgent):
         """Reset the daily token budget if the UTC date has changed."""
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         if today != self._budget_reset_date:
-            self._daily_budget_remaining = self._config["budget"]["daily_token_budget"]
+            self._daily_budget_remaining = self._config.budget.daily_token_budget
             self._budget_reset_date = today
             logger.info(
                 "Budget reset for new day %s: %d tokens available",
@@ -342,7 +334,7 @@ class OrchestratorAgent(BaseAgent):
             )
 
     async def _llm_relevance_check(
-        self, story: dict[str, Any], composite: float
+        self, story: StoryPayload, composite: float
     ) -> bool:
         """Ask the LLM whether an ambiguous story is worth fetching.
 
@@ -350,7 +342,7 @@ class OrchestratorAgent(BaseAgent):
         config/prompts.yaml. Parses the response for a YES/NO answer.
 
         Args:
-            story: The story payload dict with at least ``title``.
+            story: The StoryPayload with at least ``title``.
             composite: The composite priority score.
 
         Returns:
@@ -359,7 +351,7 @@ class OrchestratorAgent(BaseAgent):
         if self._llm_adapter is None:
             return False
 
-        title = story.get("title", "Unknown")
+        title = story.title or "Unknown"
         templates = self._llm_adapter._prompts.get("orchestrator_relevance", {})
         system_prompt = templates.get("system", "").strip()
         user_prompt = templates.get("user", "").format(

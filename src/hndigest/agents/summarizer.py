@@ -1,5 +1,7 @@
 """Summarizer agent — generates concise summaries of fetched articles via LLM."""
 
+from __future__ import annotations
+
 import hashlib
 import logging
 import sqlite3
@@ -9,6 +11,7 @@ from pathlib import Path
 from hndigest.agents.base import BaseAgent
 from hndigest.bus import CHANNEL_SUMMARIZE_REQUEST, CHANNEL_SUMMARY, MessageBus
 from hndigest.mcp.llm_mcp import LLMAdapter
+from hndigest.models import BusMessage, SummarizeRequestPayload, SummaryPayload
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +60,7 @@ class SummarizerAgent(BaseAgent):
             await self._llm.close()
             logger.info("summarizer: LLM adapter session closed")
 
-    async def process(self, channel: str, message: dict) -> None:
+    async def process(self, channel: str, message: BusMessage) -> None:
         """Handle a summarize_request message.
 
         Loads the article text, generates a summary via the LLM adapter,
@@ -66,10 +69,11 @@ class SummarizerAgent(BaseAgent):
 
         Args:
             channel: The channel the message arrived on.
-            message: The message payload dict containing story_id.
+            message: The typed bus message envelope containing a
+                SummarizeRequestPayload.
         """
-        payload = message.get("payload", {})
-        story_id: int = payload["story_id"]
+        payload: SummarizeRequestPayload = message.payload  # type: ignore[assignment]
+        story_id: int = payload.story_id
         logger.info("summarizer: processing story_id=%d", story_id)
 
         result = self._load_article(story_id)
@@ -126,15 +130,12 @@ class SummarizerAgent(BaseAgent):
         )
 
         # Publish to summary channel for the validator
-        await self.publish(
-            CHANNEL_SUMMARY,
-            {
-                "story_id": story_id,
-                "summary_text": summary_text,
-                "source_text_hash": source_text_hash,
-            },
-            msg_type="summary",
+        summary_payload = SummaryPayload(
+            story_id=story_id,
+            summary_text=summary_text,
+            source_text_hash=source_text_hash,
         )
+        await self.publish(CHANNEL_SUMMARY, summary_payload, msg_type="summary")
 
     def _load_article(self, story_id: int) -> tuple[str, str] | None:
         """Load article text and story title from the database.

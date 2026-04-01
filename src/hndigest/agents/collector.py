@@ -1,5 +1,7 @@
 """HN Collector agent — polls Hacker News and persists stories to SQLite."""
 
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
@@ -13,6 +15,7 @@ import aiohttp
 from hndigest.agents.base import BaseAgent, HEARTBEAT_INTERVAL_SECONDS
 from hndigest.bus import CHANNEL_STORY, MessageBus
 from hndigest.mcp.hn_mcp import fetch_item, fetch_top_stories
+from hndigest.models import BusMessage, StoryPayload
 
 logger = logging.getLogger(__name__)
 
@@ -160,6 +163,9 @@ class CollectorAgent(BaseAgent):
                 try:
                     msg = await asyncio.wait_for(system_queue.get(), timeout=chunk)
                     if (
+                        isinstance(msg, BusMessage)
+                        and msg.type == "shutdown"
+                    ) or (
                         isinstance(msg, dict)
                         and msg.get("type") == "shutdown"
                     ):
@@ -272,19 +278,19 @@ class CollectorAgent(BaseAgent):
 
         # Only publish if the row was actually inserted (not ignored)
         if cursor.rowcount > 0:
-            payload = {
-                "story_id": story_id,
-                "title": title,
-                "url": url,
-                "hn_text": hn_text,
-                "score": score,
-                "comments": comments,
-                "author": author,
-                "posted_at": posted_at,
-                "hn_type": hn_type,
-                "endpoints": ["topstories"],
-            }
-            await self.publish(CHANNEL_STORY, payload, msg_type="story")
+            story_payload = StoryPayload(
+                story_id=story_id,
+                title=title,
+                url=url,
+                hn_text=hn_text,
+                score=score,
+                comments=comments,
+                author=author,
+                posted_at=posted_at,
+                hn_type=hn_type,
+                endpoints=["topstories"],
+            )
+            await self.publish(CHANNEL_STORY, story_payload, msg_type="story")
             logger.info(
                 "collector: new story %d — %s (score=%d)",
                 story_id, title, score,
@@ -351,10 +357,10 @@ class CollectorAgent(BaseAgent):
     # Abstract method (required by BaseAgent, but not used in poll mode)
     # ------------------------------------------------------------------
 
-    async def process(self, channel: str, message: dict[str, Any]) -> None:
+    async def process(self, channel: str, message: BusMessage) -> None:
         """Process inbound messages (unused — collector uses polling loop).
 
         Args:
             channel: The channel the message arrived on.
-            message: The message payload dict.
+            message: The typed bus message envelope.
         """

@@ -27,6 +27,7 @@ from hndigest.agents.summarizer import SummarizerAgent
 from hndigest.agents.validator import ValidatorAgent
 from hndigest.mcp import web_mcp
 from hndigest.mcp.hn_mcp import fetch_item, fetch_top_stories
+from hndigest.models import BusMessage, SummarizeRequestPayload, SummaryPayload
 
 _WORKTREE_ROOT = Path(__file__).resolve().parents[1]
 _MIGRATIONS_DIR = _WORKTREE_ROOT / "db" / "migrations"
@@ -219,12 +220,12 @@ class TestSummarizerGeneratesSummary:
             prompts_path=_PROMPTS_CONFIG,
         )
 
-        summarize_msg: dict[str, Any] = {
-            "type": "summarize_request",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "source": "test",
-            "payload": {"story_id": story_id},
-        }
+        summarize_msg = BusMessage(
+            type="summarize_request",
+            timestamp=datetime.now(timezone.utc),
+            source="test",
+            payload=SummarizeRequestPayload(story_id=story_id),
+        )
 
         try:
             await summarizer.process(CHANNEL_SUMMARIZE_REQUEST, summarize_msg)
@@ -251,10 +252,10 @@ class TestSummarizerGeneratesSummary:
 
         # Verify: summary published to summary channel
         summary_msg = await asyncio.wait_for(summary_queue.get(), timeout=2.0)
-        assert summary_msg["type"] == "summary"
-        assert summary_msg["payload"]["story_id"] == story_id
-        assert summary_msg["payload"]["summary_text"] == summary_text
-        assert summary_msg["payload"]["source_text_hash"] == source_text_hash
+        assert summary_msg.type == "summary"
+        assert summary_msg.payload.story_id == story_id
+        assert summary_msg.payload.summary_text == summary_text
+        assert summary_msg.payload.source_text_hash == source_text_hash
 
         # Write artifact
         artifact: dict[str, Any] = {
@@ -303,12 +304,12 @@ class TestSummarizerSkipsShortArticles:
             prompts_path=_PROMPTS_CONFIG,
         )
 
-        summarize_msg: dict[str, Any] = {
-            "type": "summarize_request",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "source": "test",
-            "payload": {"story_id": story_id},
-        }
+        summarize_msg = BusMessage(
+            type="summarize_request",
+            timestamp=datetime.now(timezone.utc),
+            source="test",
+            payload=SummarizeRequestPayload(story_id=story_id),
+        )
 
         try:
             await summarizer.process(CHANNEL_SUMMARIZE_REQUEST, summarize_msg)
@@ -360,12 +361,12 @@ class TestValidatorPassesGoodSummary:
             prompts_path=_PROMPTS_CONFIG,
         )
 
-        summarize_msg: dict[str, Any] = {
-            "type": "summarize_request",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "source": "test",
-            "payload": {"story_id": story_id},
-        }
+        summarize_msg = BusMessage(
+            type="summarize_request",
+            timestamp=datetime.now(timezone.utc),
+            source="test",
+            payload=SummarizeRequestPayload(story_id=story_id),
+        )
 
         try:
             await summarizer.process(CHANNEL_SUMMARIZE_REQUEST, summarize_msg)
@@ -393,16 +394,16 @@ class TestValidatorPassesGoodSummary:
             prompts_path=_PROMPTS_CONFIG,
         )
 
-        summary_bus_msg: dict[str, Any] = {
-            "type": "summary",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "source": "test",
-            "payload": {
-                "story_id": story_id,
-                "summary_text": summary_text,
-                "source_text_hash": source_text_hash,
-            },
-        }
+        summary_bus_msg = BusMessage(
+            type="summary",
+            timestamp=datetime.now(timezone.utc),
+            source="test",
+            payload=SummaryPayload(
+                story_id=story_id,
+                summary_text=summary_text,
+                source_text_hash=source_text_hash,
+            ),
+        )
 
         try:
             await validator.process(CHANNEL_SUMMARY, summary_bus_msg)
@@ -437,9 +438,9 @@ class TestValidatorPassesGoodSummary:
         # If it passed on first try, verify validated_summary was published
         if final_status == "validated":
             validated_msg = await asyncio.wait_for(validated_queue.get(), timeout=2.0)
-            assert validated_msg["type"] == "validated_summary"
-            assert validated_msg["payload"]["story_id"] == story_id
-            assert validated_msg["payload"]["validation_result"] == "pass"
+            assert validated_msg.type == "validated_summary"
+            assert validated_msg.payload.story_id == story_id
+            assert validated_msg.payload.validation_result == "pass"
 
         # Write artifact
         artifact: dict[str, Any] = {
@@ -501,16 +502,16 @@ class TestValidatorRetriesOnFail:
             prompts_path=_PROMPTS_CONFIG,
         )
 
-        summary_bus_msg: dict[str, Any] = {
-            "type": "summary",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "source": "test",
-            "payload": {
-                "story_id": story_id,
-                "summary_text": hallucinated_summary,
-                "source_text_hash": source_text_hash,
-            },
-        }
+        summary_bus_msg = BusMessage(
+            type="summary",
+            timestamp=datetime.now(timezone.utc),
+            source="test",
+            payload=SummaryPayload(
+                story_id=story_id,
+                summary_text=hallucinated_summary,
+                source_text_hash=source_text_hash,
+            ),
+        )
 
         try:
             await validator.process(CHANNEL_SUMMARY, summary_bus_msg)
@@ -702,12 +703,12 @@ class TestFullPipelineSummarizerValidatorLive:
             prompts_path=_PROMPTS_CONFIG,
         )
 
-        summarize_msg: dict[str, Any] = {
-            "type": "summarize_request",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "source": "test",
-            "payload": {"story_id": story_id},
-        }
+        summarize_msg = BusMessage(
+            type="summarize_request",
+            timestamp=datetime.now(timezone.utc),
+            source="test",
+            payload=SummarizeRequestPayload(story_id=story_id),
+        )
 
         try:
             await summarizer.process(CHANNEL_SUMMARIZE_REQUEST, summarize_msg)
@@ -732,7 +733,7 @@ class TestFullPipelineSummarizerValidatorLive:
 
         # Get the summary message from the bus
         summary_bus_msg = await asyncio.wait_for(summary_queue.get(), timeout=2.0)
-        assert summary_bus_msg["payload"]["story_id"] == story_id
+        assert summary_bus_msg.payload.story_id == story_id
 
         # --- Stage 4: Run validator ---
         validator = ValidatorAgent(
@@ -786,8 +787,8 @@ class TestFullPipelineSummarizerValidatorLive:
         # If validated, a message should be on the validated queue
         if final_status == "validated":
             validated_msg = await asyncio.wait_for(validated_queue.get(), timeout=2.0)
-            assert validated_msg["type"] == "validated_summary"
-            assert validated_msg["payload"]["story_id"] == story_id
+            assert validated_msg.type == "validated_summary"
+            assert validated_msg.payload.story_id == story_id
 
         artifact["overall_result"] = "PASS"
         artifact_path = _write_artifact("pipeline_phase4", artifact)
