@@ -34,6 +34,26 @@ def _build_parser() -> argparse.ArgumentParser:
         default="hndigest.db",
         help="Path to the SQLite database file (default: hndigest.db).",
     )
+    start_parser.add_argument(
+        "--mode",
+        choices=["server", "cli"],
+        default="server",
+        help=(
+            "Startup mode: 'server' runs agents + FastAPI API server "
+            "(default), 'cli' runs agents only with no API server."
+        ),
+    )
+    start_parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Host to bind the API server to (default: 127.0.0.1).",
+    )
+    start_parser.add_argument(
+        "--port",
+        type=int,
+        default=8000,
+        help="Port for the API server (default: 8000).",
+    )
 
     # --- stop ---
     subparsers.add_parser(

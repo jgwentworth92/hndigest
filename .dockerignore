@@ -1,0 +1,15 @@
+.venv/
+.env
+.env.bak
+*.db
+*.sqlite3
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+tests/
+tests/artifacts/
+.worktrees/
+.git/
+.claude/
+output/
+data/

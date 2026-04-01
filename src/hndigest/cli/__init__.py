@@ -22,34 +22,81 @@ _DEFAULT_DB_PATH = "hndigest.db"
 
 
 def cmd_start(args: Any) -> None:
-    """Start the supervisor with all Phase 1, Phase 2, Phase 3, and Phase 4 agents.
+    """Start the system in server or CLI-only mode.
 
-    Creates a ``Supervisor``, registers ``CollectorAgent``,
-    ``ScorerAgent``, ``OrchestratorAgent``, ``FetcherAgent``,
-    ``CategorizerAgent``, ``SummarizerAgent``, ``ValidatorAgent``,
-    and ``ReportBuilderAgent``, installs signal handlers for graceful
-    shutdown (SIGINT, SIGTERM), and runs the event loop until shutdown
-    completes.
+    In **server** mode (the default), launches the FastAPI application
+    via uvicorn.  The FastAPI lifespan context starts the supervisor and
+    all agents automatically, so no manual agent setup is needed here.
+
+    In **cli** mode, creates a ``Supervisor``, registers all agents,
+    installs signal handlers for graceful shutdown (SIGINT, SIGTERM),
+    and runs the event loop until shutdown completes.  This mode is
+    intended for headless / cron use where no HTTP API is required.
 
     Args:
         args: Parsed CLI arguments. Expected attributes:
             ``db_path`` (str) -- path to the SQLite database file.
+            ``mode`` (str) -- "server" or "cli".
+            ``host`` (str) -- bind address for server mode.
+            ``port`` (int) -- listen port for server mode.
     """
-    from hndigest.supervisor import Supervisor
-    from hndigest.agents.collector import CollectorAgent
-    from hndigest.agents.scorer import ScorerAgent
-    from hndigest.agents.fetcher import FetcherAgent
+    mode: str = getattr(args, "mode", "server")
+
+    if mode == "server":
+        _start_server(args)
+    else:
+        _start_cli(args)
+
+
+def _start_server(args: Any) -> None:
+    """Start the FastAPI server with uvicorn.
+
+    The supervisor and all agents are managed by the FastAPI lifespan
+    context defined in ``hndigest.api``.
+
+    Args:
+        args: Parsed CLI arguments with ``host`` and ``port``.
+    """
+    import uvicorn
+
+    host: str = getattr(args, "host", "127.0.0.1")
+    port: int = getattr(args, "port", 8000)
+
+    logger.info(
+        "Starting server mode on %s:%d", host, port,
+    )
+    uvicorn.run(
+        "hndigest.api:app",
+        host=host,
+        port=port,
+        log_level="info",
+    )
+
+
+def _start_cli(args: Any) -> None:
+    """Start agents in CLI-only mode (no HTTP server).
+
+    Creates a ``Supervisor``, registers all agents, installs signal
+    handlers for graceful shutdown, and blocks until a shutdown signal
+    is received.
+
+    Args:
+        args: Parsed CLI arguments with ``db_path``.
+    """
     from hndigest.agents.categorizer import CategorizerAgent
+    from hndigest.agents.collector import CollectorAgent
+    from hndigest.agents.fetcher import FetcherAgent
     from hndigest.agents.orchestrator import OrchestratorAgent
+    from hndigest.agents.report_builder import ReportBuilderAgent
+    from hndigest.agents.scorer import ScorerAgent
     from hndigest.agents.summarizer import SummarizerAgent
     from hndigest.agents.validator import ValidatorAgent
-    from hndigest.agents.report_builder import ReportBuilderAgent
-
     from hndigest.bus import MessageBus
     from hndigest.db import init_db
+    from hndigest.supervisor import Supervisor
 
     db_path: str = getattr(args, "db_path", _DEFAULT_DB_PATH)
-    logger.info("Initializing system with db_path=%s", db_path)
+    logger.info("Initializing CLI mode with db_path=%s", db_path)
 
     async def _run_system() -> None:
         """Full async lifecycle: init, run, shutdown on signal."""
@@ -99,7 +146,7 @@ def cmd_start(args: Any) -> None:
         supervisor_local.register_agent(report_builder)
 
         await supervisor_local.start()
-        logger.info("System is running. Press Ctrl+C to stop.")
+        logger.info("System is running (CLI mode). Press Ctrl+C to stop.")
 
         # Wait for shutdown signal
         await shutdown_event.wait()
