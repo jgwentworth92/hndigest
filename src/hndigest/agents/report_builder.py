@@ -1,5 +1,7 @@
 """Report Builder agent — assembles periodic digests from stories, scores, categories, and summaries."""
 
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
@@ -10,6 +12,7 @@ from typing import Any
 
 from hndigest.agents.base import BaseAgent, HEARTBEAT_INTERVAL_SECONDS, SYSTEM_CHANNEL
 from hndigest.bus import CHANNEL_DIGEST, MessageBus
+from hndigest.models import BusMessage
 
 logger = logging.getLogger(__name__)
 
@@ -174,14 +177,19 @@ class ReportBuilderAgent(BaseAgent):
                 except Exception:
                     continue
 
-                if channel == SYSTEM_CHANNEL and isinstance(msg, dict):
-                    if msg.get("type") == "shutdown":
+                if channel == SYSTEM_CHANNEL:
+                    if isinstance(msg, BusMessage) and msg.type == "shutdown":
+                        logger.info("report-builder received shutdown signal")
+                        self._shutdown = True
+                        self.status = "stopping"
+                        return False
+                    if isinstance(msg, dict) and msg.get("type") == "shutdown":
                         logger.info("report-builder received shutdown signal")
                         self._shutdown = True
                         self.status = "stopping"
                         return False
 
-                if channel == CHANNEL_DIGEST_TRIGGER and isinstance(msg, dict):
+                if channel == CHANNEL_DIGEST_TRIGGER:
                     logger.info("report-builder received on-demand trigger")
                     return True
 
@@ -444,10 +452,10 @@ class ReportBuilderAgent(BaseAgent):
     # Abstract method (required by BaseAgent)
     # ------------------------------------------------------------------
 
-    async def process(self, channel: str, message: dict[str, Any]) -> None:
+    async def process(self, channel: str, message: BusMessage) -> None:
         """Process inbound messages (unused — report-builder uses timer loop).
 
         Args:
             channel: The channel the message arrived on.
-            message: The message payload dict.
+            message: The typed bus message envelope.
         """

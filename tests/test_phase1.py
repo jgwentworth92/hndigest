@@ -18,6 +18,7 @@ from hndigest.bus import CHANNEL_SCORE, CHANNEL_STORY, CHANNEL_SYSTEM, MessageBu
 from hndigest.db import init_db
 from hndigest.agents.base import BaseAgent
 from hndigest.agents.scorer import ScorerAgent
+from hndigest.models import BusMessage, HeartbeatPayload, StoryPayload
 from hndigest.supervisor import Supervisor
 
 # Resolve the real migrations directory from the worktree layout.
@@ -97,12 +98,12 @@ class TestMessageBusFanout:
         q1 = bus.subscribe(CHANNEL_STORY)
         q2 = bus.subscribe(CHANNEL_STORY)
 
-        message: dict[str, Any] = {
-            "type": "story",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "source": "test",
-            "payload": {"id": 1, "title": "Test Story"},
-        }
+        message = BusMessage(
+            type="story",
+            timestamp=datetime.now(timezone.utc),
+            source="test",
+            payload=StoryPayload(story_id=1, title="Test Story"),
+        )
 
         await bus.publish(CHANNEL_STORY, message)
 
@@ -111,7 +112,21 @@ class TestMessageBusFanout:
 
         assert msg1 == message
         assert msg2 == message
-        assert msg1["payload"]["title"] == "Test Story"
+        assert msg1.payload.title == "Test Story"
+
+
+# ------------------------------------------------------------------
+# Test 2b: Bus rejects raw dicts
+# ------------------------------------------------------------------
+
+
+class TestBusRejectsRawDicts:
+    """Verify the bus raises TypeError when given a raw dict instead of BusMessage."""
+
+    async def test_publish_raw_dict_raises_type_error(self) -> None:
+        bus = MessageBus()
+        with pytest.raises(TypeError):
+            await bus.publish(CHANNEL_STORY, {"type": "story", "payload": {}})
 
 
 # ------------------------------------------------------------------
@@ -161,20 +176,20 @@ class TestScorerWithSeededData:
         conn.commit()
 
         # Build a story message matching what the scorer expects.
-        story_message: dict[str, Any] = {
-            "type": "story",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "source": "collector",
-            "payload": {
-                "story_id": story_id,
-                "title": "Test Story for Scoring",
-                "url": "https://example.com",
-                "score": 150,
-                "comments": 42,
-                "posted_at": posted_at,
-                "endpoints": json.dumps(["topstories"]),
-            },
-        }
+        story_message = BusMessage(
+            type="story",
+            timestamp=datetime.now(timezone.utc),
+            source="collector",
+            payload=StoryPayload(
+                story_id=story_id,
+                title="Test Story for Scoring",
+                url="https://example.com",
+                score=150,
+                comments=42,
+                posted_at=posted_at,
+                endpoints=["topstories"],
+            ),
+        )
 
         # Run the scorer's process method directly.
         await scorer.process(CHANNEL_STORY, story_message)
@@ -191,9 +206,9 @@ class TestScorerWithSeededData:
 
         # Verify: score message was published to the score channel.
         score_msg = await asyncio.wait_for(score_queue.get(), timeout=2.0)
-        assert score_msg["type"] == "score"
-        assert score_msg["payload"]["story_id"] == story_id
-        assert score_msg["payload"]["composite"] > 0
+        assert score_msg.type == "score"
+        assert score_msg.payload.story_id == story_id
+        assert score_msg.payload.composite > 0
 
         conn.close()
 
@@ -214,8 +229,8 @@ class _NoOpAgent(BaseAgent):
             publications=[],
         )
 
-    async def process(self, channel: str, message: dict[str, Any]) -> None:
-        """Do nothing — used only to verify supervisor lifecycle."""
+    async def process(self, channel: str, message: BusMessage) -> None:
+        """Do nothing -- used only to verify supervisor lifecycle."""
 
 
 class TestSupervisorLifecycle:
@@ -291,8 +306,8 @@ class TestCollectorLive:
         published_count = 0
         while not story_queue.empty():
             msg = story_queue.get_nowait()
-            assert msg["type"] == "story"
-            assert "story_id" in msg["payload"]
+            assert msg.type == "story"
+            assert msg.payload.story_id > 0
             published_count += 1
 
         assert published_count > 0, "Expected at least one story published to bus"

@@ -19,6 +19,7 @@ from typing import Any
 from hndigest.agents.base import BaseAgent
 from hndigest.bus import CHANNEL_SYSTEM, MessageBus
 from hndigest.db import init_db
+from hndigest.models import BusMessage, HeartbeatPayload
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +55,7 @@ class Supervisor:
         self._registry: dict[str, dict[str, Any]] = {}
         self._running: bool = False
         self._health_task: asyncio.Task[None] | None = None
-        self._system_queue: asyncio.Queue[dict[str, Any]] | None = None
+        self._system_queue: asyncio.Queue[BusMessage] | None = None
 
         self.bus: MessageBus | None = None
         self.db: sqlite3.Connection | None = None
@@ -305,31 +306,44 @@ class Supervisor:
                         )
                         entry["status"] = "unhealthy"
 
-    def _process_system_message(self, message: dict[str, Any]) -> None:
+    def _process_system_message(self, message: BusMessage | dict[str, Any]) -> None:
         """Handle a single message from the system channel.
 
-        Updates agent registry with heartbeat data.
+        Updates agent registry with heartbeat data. Accepts both
+        typed ``BusMessage`` envelopes and legacy dicts for backward
+        compatibility during the migration.
 
         Args:
-            message: A message dict from the system channel.
+            message: A BusMessage or legacy dict from the system channel.
         """
-        if not isinstance(message, dict):
+        if isinstance(message, BusMessage):
+            if message.type != "heartbeat":
+                return
+            payload = message.payload
+            if not isinstance(payload, HeartbeatPayload):
+                return
+            agent_name: str | None = payload.agent
+            if agent_name is None or agent_name not in self._registry:
+                return
+            entry = self._registry[agent_name]
+            entry["last_heartbeat"] = time.monotonic()
+            entry["messages_processed"] = payload.messages_processed
+        elif isinstance(message, dict):
+            msg_type = message.get("type")
+            if msg_type != "heartbeat":
+                return
+            raw_payload = message.get("payload", {})
+            agent_name = raw_payload.get("agent")
+            if agent_name is None or agent_name not in self._registry:
+                return
+            entry = self._registry[agent_name]
+            entry["last_heartbeat"] = time.monotonic()
+            entry["messages_processed"] = raw_payload.get(
+                "messages_processed", entry["messages_processed"]
+            )
+        else:
             return
 
-        msg_type = message.get("type")
-        if msg_type != "heartbeat":
-            return
-
-        payload = message.get("payload", {})
-        agent_name = payload.get("agent")
-        if agent_name is None or agent_name not in self._registry:
-            return
-
-        entry = self._registry[agent_name]
-        entry["last_heartbeat"] = time.monotonic()
-        entry["messages_processed"] = payload.get(
-            "messages_processed", entry["messages_processed"]
-        )
         # Restore healthy status if previously flagged
         if entry["status"] == "unhealthy":
             logger.info(
@@ -356,12 +370,16 @@ class Supervisor:
 
         # 1. Publish shutdown message
         if self.bus is not None:
-            shutdown_message = {
-                "type": "shutdown",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "source": "supervisor",
-                "payload": {},
-            }
+            shutdown_message = BusMessage(
+                type="shutdown",
+                timestamp=datetime.now(timezone.utc),
+                source="supervisor",
+                payload=HeartbeatPayload(
+                    agent="supervisor",
+                    status="shutdown",
+                    messages_processed=0,
+                ),
+            )
             await self.bus.publish(CHANNEL_SYSTEM, shutdown_message)
             logger.info("Published shutdown message to system channel.")
 

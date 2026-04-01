@@ -13,6 +13,7 @@ Only these external packages are permitted:
 | Package | Purpose |
 |---|---|
 | aiohttp or httpx | Async HTTP client |
+| pydantic | Typed models for message payloads and config validation |
 | PyYAML | Category rules and scoring config |
 | FastAPI + uvicorn | API server and dashboard |
 | readability-lxml or trafilatura | Article text extraction |

@@ -1,7 +1,7 @@
 """End-to-end verification tests for Phase 3 orchestrator agent.
 
 Tests exercise the real orchestrator, message bus, database, and downstream
-agents with no mocking — real bus, real DB, real agents — per CLAUDE.md
+agents with no mocking -- real bus, real DB, real agents -- per CLAUDE.md
 testing conventions.
 """
 
@@ -24,6 +24,7 @@ from hndigest.bus import (
 from hndigest.db import init_db
 from hndigest.agents.orchestrator import OrchestratorAgent
 from hndigest.agents.scorer import ScorerAgent
+from hndigest.models import BusMessage, ScoreComponents, ScorePayload, StoryPayload
 
 _WORKTREE_ROOT = Path(__file__).resolve().parents[1]
 _MIGRATIONS_DIR = _WORKTREE_ROOT / "db" / "migrations"
@@ -113,7 +114,7 @@ def _make_story_message(
     url: str | None,
     score: int = 100,
     comments: int = 20,
-) -> dict[str, Any]:
+) -> BusMessage:
     """Build a story bus message.
 
     Args:
@@ -124,23 +125,23 @@ def _make_story_message(
         comments: Number of comments.
 
     Returns:
-        A properly formatted bus message dict for the story channel.
+        A properly formatted BusMessage for the story channel.
     """
-    return {
-        "type": "story",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "source": "test",
-        "payload": {
-            "story_id": story_id,
-            "title": title,
-            "url": url,
-            "score": score,
-            "comments": comments,
-        },
-    }
+    return BusMessage(
+        type="story",
+        timestamp=datetime.now(timezone.utc),
+        source="test",
+        payload=StoryPayload(
+            story_id=story_id,
+            title=title,
+            url=url,
+            score=score,
+            comments=comments,
+        ),
+    )
 
 
-def _make_score_message(story_id: int, composite: float) -> dict[str, Any]:
+def _make_score_message(story_id: int, composite: float) -> BusMessage:
     """Build a score bus message.
 
     Args:
@@ -148,23 +149,23 @@ def _make_score_message(story_id: int, composite: float) -> dict[str, Any]:
         composite: The composite priority score.
 
     Returns:
-        A properly formatted bus message dict for the score channel.
+        A properly formatted BusMessage for the score channel.
     """
-    return {
-        "type": "score",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "source": "test",
-        "payload": {
-            "story_id": story_id,
-            "composite": composite,
-            "components": {
-                "score_velocity": 20.0,
-                "comment_velocity": 10.0,
-                "front_page_presence": 50,
-                "recency": 80.0,
-            },
-        },
-    }
+    return BusMessage(
+        type="score",
+        timestamp=datetime.now(timezone.utc),
+        source="test",
+        payload=ScorePayload(
+            story_id=story_id,
+            composite=composite,
+            components=ScoreComponents(
+                score_velocity=20.0,
+                comment_velocity=10.0,
+                front_page_presence=50,
+                recency=80.0,
+            ),
+        ),
+    )
 
 
 # ------------------------------------------------------------------
@@ -204,10 +205,10 @@ class TestOrchestratorDispatchesHighScoreStories:
 
         # Verify: fetch_request was published to bus.
         fetch_msg = await asyncio.wait_for(fetch_queue.get(), timeout=2.0)
-        assert fetch_msg["type"] == "fetch_request"
-        assert fetch_msg["payload"]["story_id"] == story_id
-        assert fetch_msg["payload"]["url"] == url
-        assert fetch_msg["payload"]["priority"] == 50.0
+        assert fetch_msg.type == "fetch_request"
+        assert fetch_msg.payload.story_id == story_id
+        assert fetch_msg.payload.url == url
+        assert fetch_msg.payload.priority == 50.0
 
         # Verify: orchestrator_decisions table has row with decision="dispatched".
         row = conn.execute(
@@ -349,7 +350,7 @@ class TestOrchestratorBudgetReset:
         )
 
         # Record original daily budget from config.
-        full_budget = orchestrator._config["budget"]["daily_token_budget"]
+        full_budget = orchestrator._config.budget.daily_token_budget
 
         # Exhaust the budget and set reset date to yesterday.
         orchestrator._daily_budget_remaining = 0
@@ -486,20 +487,20 @@ class TestFullPipelineWithOrchestrator:
         scored_stories: list[dict[str, Any]] = []
         for row in stories_from_db:
             sid, title, url, hn_score, comments, posted_at, endpoints = row
-            story_msg: dict[str, Any] = {
-                "type": "story",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "source": "test",
-                "payload": {
-                    "story_id": sid,
-                    "title": title,
-                    "url": url,
-                    "score": hn_score,
-                    "comments": comments,
-                    "posted_at": posted_at,
-                    "endpoints": endpoints,
-                },
-            }
+            story_msg = BusMessage(
+                type="story",
+                timestamp=datetime.now(timezone.utc),
+                source="test",
+                payload=StoryPayload(
+                    story_id=sid,
+                    title=title,
+                    url=url,
+                    score=hn_score,
+                    comments=comments,
+                    posted_at=posted_at,
+                    endpoints=json.loads(endpoints) if isinstance(endpoints, str) else endpoints,
+                ),
+            )
             await scorer.process(CHANNEL_STORY, story_msg)
 
             # Read composite from DB.
@@ -532,7 +533,7 @@ class TestFullPipelineWithOrchestrator:
         )
 
         # Drain score_queue from scorer output and feed to orchestrator.
-        score_messages: list[dict[str, Any]] = []
+        score_messages: list[BusMessage] = []
         while not score_queue.empty():
             score_messages.append(score_queue.get_nowait())
 
@@ -581,22 +582,22 @@ class TestFullPipelineWithOrchestrator:
         try:
             while not fetch_queue.empty():
                 fetch_msg = fetch_queue.get_nowait()
-                assert fetch_msg["type"] == "fetch_request"
+                assert fetch_msg.type == "fetch_request"
                 # Process at most 3 fetch requests to keep test duration reasonable.
                 if fetch_count < 3:
                     await fetcher.process(CHANNEL_FETCH_REQUEST, fetch_msg)
                     fetch_count += 1
 
-                    payload = fetch_msg["payload"]
+                    payload = fetch_msg.payload
                     article_row = conn.execute(
                         "SELECT fetch_status, LENGTH(text) FROM articles WHERE story_id = ?",
-                        (payload["story_id"],),
+                        (payload.story_id,),
                     ).fetchone()
                     if article_row:
                         articles_fetched.append({
-                            "story_id": payload["story_id"],
-                            "title": payload.get("title", ""),
-                            "url": payload.get("url", ""),
+                            "story_id": payload.story_id,
+                            "title": payload.title,
+                            "url": payload.url,
                             "fetch_status": article_row[0],
                             "text_length": article_row[1] or 0,
                         })

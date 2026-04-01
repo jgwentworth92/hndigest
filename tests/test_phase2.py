@@ -1,7 +1,7 @@
 """End-to-end verification tests for Phase 2 content pipeline.
 
 Tests exercise the real web MCP, fetcher, categorizer, scorer, and report
-builder with no mocking — real HTTP, real DB, real agents — per CLAUDE.md
+builder with no mocking -- real HTTP, real DB, real agents -- per CLAUDE.md
 testing conventions.
 """
 
@@ -17,6 +17,7 @@ import pytest
 from hndigest.bus import (
     CHANNEL_ARTICLE,
     CHANNEL_CATEGORY,
+    CHANNEL_FETCH_REQUEST,
     CHANNEL_SCORE,
     CHANNEL_STORY,
     MessageBus,
@@ -28,6 +29,7 @@ from hndigest.agents.categorizer import CategorizerAgent
 from hndigest.agents.fetcher import FetcherAgent
 from hndigest.agents.report_builder import ReportBuilderAgent
 from hndigest.agents.scorer import ScorerAgent
+from hndigest.models import BusMessage, FetchRequestPayload, StoryPayload
 
 _WORKTREE_ROOT = Path(__file__).resolve().parents[1]
 _MIGRATIONS_DIR = _WORKTREE_ROOT / "db" / "migrations"
@@ -179,17 +181,17 @@ class TestCategorizerWithSeededStories:
             title="New Rust Compiler optimization reduces build times",
             url="https://github.com/rust-lang/rust/pull/12345",
         )
-        msg_a: dict[str, Any] = {
-            "type": "story",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "source": "test",
-            "payload": {
-                "story_id": story_a_id,
-                "title": "New Rust Compiler optimization reduces build times",
-                "url": "https://github.com/rust-lang/rust/pull/12345",
-                "hn_type": "story",
-            },
-        }
+        msg_a = BusMessage(
+            type="story",
+            timestamp=datetime.now(timezone.utc),
+            source="test",
+            payload=StoryPayload(
+                story_id=story_a_id,
+                title="New Rust Compiler optimization reduces build times",
+                url="https://github.com/rust-lang/rust/pull/12345",
+                hn_type="story",
+            ),
+        )
         await categorizer.process(CHANNEL_STORY, msg_a)
 
         # --- Story B: arxiv.org URL with "transformer" in title ---
@@ -199,17 +201,17 @@ class TestCategorizerWithSeededStories:
             title="Efficient Transformer Architectures for Long Sequences",
             url="https://arxiv.org/abs/2401.12345",
         )
-        msg_b: dict[str, Any] = {
-            "type": "story",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "source": "test",
-            "payload": {
-                "story_id": story_b_id,
-                "title": "Efficient Transformer Architectures for Long Sequences",
-                "url": "https://arxiv.org/abs/2401.12345",
-                "hn_type": "story",
-            },
-        }
+        msg_b = BusMessage(
+            type="story",
+            timestamp=datetime.now(timezone.utc),
+            source="test",
+            payload=StoryPayload(
+                story_id=story_b_id,
+                title="Efficient Transformer Architectures for Long Sequences",
+                url="https://arxiv.org/abs/2401.12345",
+                hn_type="story",
+            ),
+        )
         await categorizer.process(CHANNEL_STORY, msg_b)
 
         # --- Story C: job posting ---
@@ -220,17 +222,17 @@ class TestCategorizerWithSeededStories:
             url="https://acme.com/careers",
             hn_type="job",
         )
-        msg_c: dict[str, Any] = {
-            "type": "story",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "source": "test",
-            "payload": {
-                "story_id": story_c_id,
-                "title": "Acme Corp is hiring senior engineers",
-                "url": "https://acme.com/careers",
-                "hn_type": "job",
-            },
-        }
+        msg_c = BusMessage(
+            type="story",
+            timestamp=datetime.now(timezone.utc),
+            source="test",
+            payload=StoryPayload(
+                story_id=story_c_id,
+                title="Acme Corp is hiring senior engineers",
+                url="https://acme.com/careers",
+                hn_type="job",
+            ),
+        )
         await categorizer.process(CHANNEL_STORY, msg_c)
 
         # --- Verify categories in DB ---
@@ -394,15 +396,15 @@ class TestFetcherLive:
         # Open an HTTP session for the fetcher (normally done in start()).
         fetcher._session = aiohttp.ClientSession()
 
-        story_message: dict[str, Any] = {
-            "type": "story",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "source": "test",
-            "payload": {
-                "story_id": story_id,
-                "url": url,
-            },
-        }
+        story_message = BusMessage(
+            type="fetch_request",
+            timestamp=datetime.now(timezone.utc),
+            source="test",
+            payload=FetchRequestPayload(
+                story_id=story_id,
+                url=url,
+            ),
+        )
 
         artifact: dict[str, Any] = {
             "test": "test_fetcher_live",
@@ -410,7 +412,7 @@ class TestFetcherLive:
         }
 
         try:
-            await fetcher.process(CHANNEL_STORY, story_message)
+            await fetcher.process(CHANNEL_FETCH_REQUEST, story_message)
         finally:
             await fetcher._session.close()
             fetcher._session = None
@@ -432,9 +434,9 @@ class TestFetcherLive:
 
         # Verify article was published to the bus
         article_msg = await asyncio.wait_for(article_queue.get(), timeout=2.0)
-        assert article_msg["type"] == "article"
-        assert article_msg["payload"]["story_id"] == story_id
-        assert article_msg["payload"]["fetch_status"] == "success"
+        assert article_msg.type == "article"
+        assert article_msg.payload.story_id == story_id
+        assert article_msg.payload.fetch_status == "success"
 
         artifact_path = _write_artifact("fetcher_live", artifact)
         print(f"\n--- Artifact written to: {artifact_path}")
@@ -529,18 +531,18 @@ class TestFullPipelinePhase2:
             fetcher = FetcherAgent(bus=bus, db_conn=conn)
             fetcher._session = session
 
-            story_message: dict[str, Any] = {
-                "type": "story",
-                "timestamp": now.isoformat(),
-                "source": "test",
-                "payload": {
-                    "story_id": story_id,
-                    "url": url,
-                },
-            }
+            fetch_message = BusMessage(
+                type="fetch_request",
+                timestamp=now,
+                source="test",
+                payload=FetchRequestPayload(
+                    story_id=story_id,
+                    url=url,
+                ),
+            )
 
-            await fetcher.process(CHANNEL_STORY, story_message)
-            # Do not close session here — we reuse the shared one.
+            await fetcher.process(CHANNEL_FETCH_REQUEST, fetch_message)
+            # Do not close session here -- we reuse the shared one.
             fetcher._session = None
 
             article_row = conn.execute(
@@ -562,17 +564,17 @@ class TestFullPipelinePhase2:
             bus=bus, db_conn=conn, config_path=_CATEGORIES_CONFIG,
         )
 
-        cat_message: dict[str, Any] = {
-            "type": "story",
-            "timestamp": now.isoformat(),
-            "source": "test",
-            "payload": {
-                "story_id": story_id,
-                "title": title,
-                "url": url,
-                "hn_type": hn_type,
-            },
-        }
+        cat_message = BusMessage(
+            type="story",
+            timestamp=now,
+            source="test",
+            payload=StoryPayload(
+                story_id=story_id,
+                title=title,
+                url=url,
+                hn_type=hn_type,
+            ),
+        )
         await categorizer.process(CHANNEL_STORY, cat_message)
 
         cat_rows = conn.execute(
@@ -589,18 +591,19 @@ class TestFullPipelinePhase2:
         # --- Stage 4: Score ---
         scorer = ScorerAgent(bus=bus, db_conn=conn, config_path=_SCORING_CONFIG)
 
-        score_message: dict[str, Any] = {
-            "type": "story",
-            "timestamp": now.isoformat(),
-            "source": "test",
-            "payload": {
-                "story_id": story_id,
-                "score": hn_score,
-                "comments": comments,
-                "posted_at": posted_at,
-                "endpoints": json.dumps(["topstories"]),
-            },
-        }
+        score_message = BusMessage(
+            type="story",
+            timestamp=now,
+            source="test",
+            payload=StoryPayload(
+                story_id=story_id,
+                score=hn_score,
+                comments=comments,
+                posted_at=posted_at,
+                endpoints=["topstories"],
+                title=title,
+            ),
+        )
         await scorer.process(CHANNEL_STORY, score_message)
 
         score_row = conn.execute(

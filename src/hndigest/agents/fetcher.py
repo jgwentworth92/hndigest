@@ -1,17 +1,19 @@
 """Fetcher agent — retrieves article text from story URLs."""
 
+from __future__ import annotations
+
 import asyncio
 import hashlib
 import logging
 import sqlite3
 from datetime import datetime, timezone
-from typing import Any
 
 import aiohttp
 
 from hndigest.agents.base import BaseAgent
 from hndigest.bus import CHANNEL_ARTICLE, CHANNEL_FETCH_REQUEST, MessageBus
 from hndigest.mcp import web_mcp
+from hndigest.models import ArticlePayload, BusMessage, FetchRequestPayload
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +71,7 @@ class FetcherAgent(BaseAgent):
     # Message processing
     # ------------------------------------------------------------------
 
-    async def process(self, channel: str, message: dict[str, Any]) -> None:
+    async def process(self, channel: str, message: BusMessage) -> None:
         """Handle a fetch_request message by fetching its article content.
 
         The orchestrator dispatches fetch_request messages containing:
@@ -77,18 +79,14 @@ class FetcherAgent(BaseAgent):
 
         Args:
             channel: The channel the message arrived on.
-            message: The message payload dict containing fetch request data.
+            message: The typed bus message envelope containing a FetchRequestPayload.
         """
-        payload = message.get("payload", {})
-        story_id: int = payload.get("story_id")
-        url: str | None = payload.get("url")
-        hn_text: str | None = payload.get("hn_text")
-        title: str | None = payload.get("title")
-        priority: float | None = payload.get("priority")
-
-        if story_id is None:
-            logger.warning("fetcher: received message with no story_id, skipping")
-            return
+        payload: FetchRequestPayload = message.payload  # type: ignore[assignment]
+        story_id: int = payload.story_id
+        url: str | None = payload.url
+        hn_text: str | None = payload.hn_text
+        title: str = payload.title
+        priority: float = payload.priority
 
         logger.debug(
             "fetcher: received fetch_request for story %d (title=%s, priority=%s)",
@@ -217,10 +215,10 @@ class FetcherAgent(BaseAgent):
             text_hash: SHA-256 hex digest of the text.
             fetch_status: The fetch outcome status string.
         """
-        payload = {
-            "story_id": story_id,
-            "text": text,
-            "text_hash": text_hash,
-            "fetch_status": fetch_status,
-        }
-        await self.publish(CHANNEL_ARTICLE, payload, msg_type="article")
+        article_payload = ArticlePayload(
+            story_id=story_id,
+            text=text,
+            text_hash=text_hash,
+            fetch_status=fetch_status,
+        )
+        await self.publish(CHANNEL_ARTICLE, article_payload, msg_type="article")
