@@ -4,14 +4,17 @@ version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
     "aiohttp",
+    "fastapi>=0.110.0",
     "pydantic>=2.0",
     "PyYAML",
     "trafilatura",
     "python-dotenv",
+    "uvicorn[standard]",
 ]
 
 [project.optional-dependencies]
 dev = [
+    "httpx",
     "pytest",
     "pytest-asyncio",
     "python-dotenv",
