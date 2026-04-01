@@ -553,7 +553,9 @@ Entry point: `python -m hndigest`
 
 | Command | Description |
 |---|---|
-| `hndigest start` | Start supervisor + all agents + API server |
+| `hndigest start --mode server` | Start supervisor + all agents + FastAPI API server (default) |
+| `hndigest start --mode cli` | Start supervisor + all agents only, no API server |
+| `hndigest start --mode server --host 0.0.0.0 --port 8000` | Server mode with custom bind (for Docker) |
 | `hndigest stop` | Graceful shutdown |
 | `hndigest status` | All agent statuses, last heartbeat, message counts |
 | `hndigest digest --now` | Trigger immediate digest generation for current period |
@@ -568,7 +570,21 @@ Entry point: `python -m hndigest`
 
 ### FastAPI Server
 
-Runs as an async task alongside agents in the same process.
+Runs in the same process and asyncio event loop as the agents. The supervisor starts inside FastAPI's lifespan context — when the server starts, agents start; when it stops, agents shut down gracefully. No external job queue (Redis/Celery) is needed because agents are asyncio tasks in the same event loop.
+
+The WebSocket handler subscribes to the message bus and broadcasts events to all connected clients. The REST endpoints query SQLite directly.
+
+```
+Python Process (single asyncio event loop)
+├── FastAPI (uvicorn)
+│   ├── REST endpoints → read SQLite
+│   └── WebSocket /api/events → subscribed to message bus
+└── Supervisor
+    ├── Collector → story channel
+    ├── Scorer, Categorizer, Orchestrator
+    ├── Fetcher, Summarizer, Validator
+    └── Report Builder → digest channel → WebSocket broadcast
+```
 
 | Endpoint | Method | Description |
 |---|---|---|
@@ -576,14 +592,14 @@ Runs as an async task alongside agents in the same process.
 | /api/digests | GET | List recent digests. Params: limit, since |
 | /api/digests/latest | GET | Most recent digest |
 | /api/digests/{id} | GET | Specific digest |
+| /api/digests/generate | POST | Trigger on-demand digest generation |
 | /api/stories | GET | Query stories. Params: category, min_score, since, limit |
 | /api/stories/{id} | GET | Full story detail: metadata, article text, summary, validation, score breakdown |
 | /api/categories | GET | Category breakdown for current period |
 | /api/agents | GET | Agent registry: name, status, last heartbeat, messages processed |
 | /api/config | GET | Current configuration |
-| /api/digest/generate | POST | Trigger on-demand digest |
 | /api/chat | POST | Send a message to the chat agent. Body: {session_id, message}. Response: {session_id, response, tool_calls} |
-| /api/events | WebSocket | Live stream of new stories and digest completions |
+| /api/events | WebSocket | Live stream: new stories, digest completions, agent status changes. Client subscribes on connect, receives JSON messages. |
 
 ### Web Dashboard
 
@@ -640,12 +656,22 @@ Single-page application served by FastAPI. Connects to WebSocket for live update
 - [ ] CLI: hndigest chat "query"
 - [ ] End-to-end test: chat query -> tool calls -> response
 
-### Phase 6: Interface
-- [ ] FastAPI server with all REST endpoints including /api/chat
-- [ ] WebSocket for live updates
-- [ ] Web dashboard with chat view
+### Phase 6: FastAPI Backend + Docker
+- [ ] FastAPI app with lifespan managing supervisor startup/shutdown
+- [ ] Two startup modes: `--mode server` (default, agents + API) and `--mode cli` (agents only)
+- [ ] REST endpoints: /api/health, /api/digests, /api/stories, /api/categories, /api/agents, /api/config
+- [ ] POST /api/digests/generate for on-demand digest
+- [ ] WebSocket /api/events broadcasting story and digest events from message bus
+- [ ] CORS enabled for Next.js dev server
+- [ ] Dockerfile + docker-compose.yaml with volume mounts for DB and config
+- [ ] End-to-end API tests
+
+### Phase 7: Web Dashboard + Chat Agent
+- [ ] Next.js dashboard consuming FastAPI REST + WebSocket
+- [ ] Chat agent with ReAct loop (ADR pending)
+- [ ] Analytics MCP server with 12 query tools
+- [ ] Chat view in dashboard with streaming responses
 - [ ] Historical digest browsing
-- [ ] Docker containerization
 - [ ] Documentation
 
 ---
