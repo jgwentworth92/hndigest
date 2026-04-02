@@ -46,6 +46,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.bus = bus
     app.state.db_path = db_path
     app.state.supervisor = None
+    app.state.active_runs = {}  # dict[str, asyncio.Task] — background run tasks
     app.state.started_at_monotonic = time.monotonic()
 
     logger.info("FastAPI lifespan: database initialized at %s", db_path)
