@@ -446,13 +446,15 @@ class ReportBuilderAgent(BaseAgent):
         except sqlite3.Error:
             logger.exception("report-builder: failed to persist digest")
 
-        payload = {
-            "period_start": digest["period_start"],
-            "period_end": digest["period_end"],
-            "story_count": digest["story_count"],
-            "content_json": digest["content_json"],
-            "content_md": digest["content_md"],
-        }
+        from hndigest.models import DigestPayload
+
+        payload = DigestPayload(
+            period_start=digest["period_start"],
+            period_end=digest["period_end"],
+            story_count=digest["story_count"],
+            content_json=digest["content_json"],
+            content_md=digest["content_md"],
+        )
         await self.publish(CHANNEL_DIGEST, payload, msg_type="digest")
 
     # ------------------------------------------------------------------

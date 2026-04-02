@@ -258,6 +258,29 @@ class HeartbeatPayload(BaseModel):
     messages_processed: int = 0
 
 
+# ── Digest (report builder -> WebSocket broadcast) ────────────────────
+
+
+class DigestPayload(BaseModel):
+    """Payload published by the report builder when a digest is assembled.
+
+    Attributes:
+        period_start: ISO 8601 UTC start of the digest period.
+        period_end: ISO 8601 UTC end of the digest period.
+        story_count: Number of stories included in the digest.
+        content_json: Structured digest data as a JSON string.
+        content_md: Rendered markdown digest.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    period_start: str
+    period_end: str
+    story_count: int
+    content_json: str
+    content_md: str
+
+
 # ── Union of all payload types ───────────────────────────────────────
 
 PayloadType = (
@@ -271,6 +294,7 @@ PayloadType = (
     | ValidatedSummaryPayload
     | OrchestratorDecisionPayload
     | HeartbeatPayload
+    | DigestPayload
 )
 
 
