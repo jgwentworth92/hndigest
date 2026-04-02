@@ -586,20 +586,38 @@ Python Process (single asyncio event loop)
     └── Report Builder → digest channel → WebSocket broadcast
 ```
 
+**Read endpoints** (synchronous, return data from SQLite):
+
 | Endpoint | Method | Description |
 |---|---|---|
-| /api/health | GET | System health: agent statuses, uptime |
+| /api/health | GET | System health: uptime, database status |
 | /api/digests | GET | List recent digests. Params: limit, since |
 | /api/digests/latest | GET | Most recent digest |
 | /api/digests/{id} | GET | Specific digest |
-| /api/digests/generate | POST | Trigger on-demand digest generation |
 | /api/stories | GET | Query stories. Params: category, min_score, since, limit |
 | /api/stories/{id} | GET | Full story detail: metadata, article text, summary, validation, score breakdown |
 | /api/categories | GET | Category breakdown for current period |
-| /api/agents | GET | Agent registry: name, status, last heartbeat, messages processed |
 | /api/config | GET | Current configuration |
-| /api/chat | POST | Send a message to the chat agent. Body: {session_id, message}. Response: {session_id, response, tool_calls} |
-| /api/events | WebSocket | Live stream: new stories, digest completions, agent status changes. Client subscribes on connect, receives JSON messages. |
+
+**Action endpoints** (async, return 202 immediately, progress via WebSocket):
+
+| Endpoint | Method | Description |
+|---|---|---|
+| /api/collect | POST | Collect stories from HN API. Params: max_stories |
+| /api/score | POST | Score all unscored stories |
+| /api/categorize | POST | Categorize all uncategorized stories |
+| /api/orchestrate | POST | Run orchestrator on pending stories |
+| /api/fetch/{id} | POST | Fetch article for a specific story |
+| /api/summarize/{id} | POST | Summarize and validate a specific story |
+| /api/pipeline/run | POST | Full pipeline: collect → score → categorize → orchestrate → fetch → summarize → validate → digest |
+| /api/digests/generate | POST | Build digest from current data |
+| /api/chat | POST | Send a message to the chat agent |
+
+**WebSocket**:
+
+| Endpoint | Description |
+|---|---|
+| /api/events | Live event stream. Subscribes to all bus channels. Frontend connects before triggering actions. Events: pipeline_started, story_collected, story_scored, story_categorized, story_dispatched, article_fetched, summary_generated, summary_validated, story_skipped, digest_ready, pipeline_completed. Format: `{"event": "...", "run_id": "...", "timestamp": "...", "data": {...}}` |
 
 ### Web Dashboard
 

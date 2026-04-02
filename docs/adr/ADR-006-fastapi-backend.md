@@ -185,3 +185,67 @@ src/hndigest/api/
 - API response models reuse Pydantic payload models where possible, keeping a single source of truth for data shapes.
 - Docker provides the production deployment path. The container runs the server mode by default with SQLite and config as mounted volumes.
 - Both CLI-only and server modes are preserved. CLI mode is useful for cron jobs, scripting, and environments where an API server isn't needed.
+
+---
+
+## Amendment 1: Async action endpoints with WebSocket progress (post-implementation)
+
+The initial action endpoints (`/api/collect`, `/api/pipeline/run`, etc.) were synchronous — the HTTP request blocked until all agent work completed. This caused timeouts on long-running operations like the full pipeline (30-60 seconds for collect + score + fetch + summarize + validate + digest).
+
+### Problem
+
+Synchronous action endpoints are wrong for two reasons:
+1. HTTP requests timeout on long-running work (especially `/api/pipeline/run`)
+2. The frontend has no visibility into progress — it waits in the dark until the response arrives or times out
+
+### Decision
+
+Action endpoints become **fire-and-forget**: they spawn an `asyncio.Task`, return `202 Accepted` immediately with a run ID, and progress streams through the WebSocket.
+
+**Pattern:**
+```
+1. Frontend connects to WebSocket /api/events
+2. Frontend calls POST /api/pipeline/run → 202 {"run_id": "abc", "status": "started"}
+3. WebSocket receives progress events as agents process:
+   - pipeline_started, story_collected, story_scored, story_categorized,
+     story_dispatched, article_fetched, summary_generated, summary_validated,
+     story_skipped, digest_ready, pipeline_completed
+4. Frontend updates UI in real-time from WebSocket events
+```
+
+**The message bus IS the progress channel.** Agents already publish typed messages as they work. The WebSocket handler subscribes to ALL data channels (not just story/digest/score) and broadcasts every event to connected clients. No new infrastructure needed.
+
+### Action endpoint changes
+
+| Endpoint | Before | After |
+|---|---|---|
+| POST /api/collect | Sync, returns when done | 202 + background task, progress via WebSocket |
+| POST /api/score | Sync | 202 + background task |
+| POST /api/categorize | Sync | 202 + background task |
+| POST /api/orchestrate | Sync | 202 + background task |
+| POST /api/fetch/{id} | Sync | 202 + background task |
+| POST /api/summarize/{id} | Sync | 202 + background task |
+| POST /api/pipeline/run | Sync (timeout risk) | 202 + background task, full progress stream |
+
+### WebSocket event format
+
+All events follow the same shape:
+```json
+{
+  "event": "story_collected",
+  "run_id": "abc123",
+  "timestamp": "2026-04-02T12:00:00+00:00",
+  "data": { ... payload fields ... }
+}
+```
+
+### WebSocket channel subscriptions
+
+The WebSocket handler subscribes to ALL data channels:
+- story, fetch_request, article, summarize_request, score, category, summary, validated_summary, digest
+
+Each bus message is translated to a frontend-friendly event name.
+
+### Run tracking
+
+Active pipeline runs are tracked in `app.state.active_runs: dict[str, asyncio.Task]`. The `GET /api/runs/{run_id}` endpoint returns the current status. Completed runs are cleaned up after a configurable TTL.

@@ -1,20 +1,22 @@
-"""Action endpoints — trigger agent work on demand.
+"""Action endpoints — trigger agent work on demand (fire-and-forget).
 
-These endpoints instantiate agents, run them for one cycle, and return
-results. No agents auto-run in server mode. The frontend controls when
-work happens.
+These endpoints spawn agent work as background asyncio tasks, return
+``202 Accepted`` immediately with a ``run_id``, and stream progress
+to connected WebSocket clients via the message bus.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import sqlite3
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
 import aiohttp
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from hndigest.agents.categorizer import CategorizerAgent
 from hndigest.agents.collector import CollectorAgent
@@ -35,231 +37,286 @@ from hndigest.bus import (
     CHANNEL_VALIDATED_SUMMARY,
     MessageBus,
 )
-from hndigest.models import BusMessage
+from hndigest.models import (
+    BusMessage,
+    FetchRequestPayload,
+    ScoreComponents,
+    ScorePayload,
+    StoryPayload,
+    SummarizeRequestPayload,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["actions"])
 
 
-@router.post("/collect", status_code=200)
+def _new_run_id() -> str:
+    """Generate a short unique run identifier.
+
+    Returns:
+        A 12-character hex string derived from a UUID4.
+    """
+    return uuid.uuid4().hex[:12]
+
+
+@router.post("/collect", status_code=202)
 async def collect(
+    request: Request,
     max_stories: int = Query(default=10, ge=1, le=500),
     db: sqlite3.Connection = Depends(get_db),
     bus: MessageBus = Depends(get_bus),
-) -> dict[str, Any]:
-    """Run one collector poll cycle against the HN API.
+) -> dict[str, str]:
+    """Trigger a collector poll cycle as a background task.
 
-    Fetches top stories, persists new ones, publishes to story channel.
+    Spawns an asyncio task that fetches top stories from the HN API,
+    persists new ones, and publishes to the story channel. Progress
+    streams to WebSocket clients via the bus.
 
     Args:
+        request: The incoming FastAPI request (for app.state access).
         max_stories: Maximum stories to collect this cycle.
         db: Database connection.
         bus: Message bus.
 
     Returns:
-        Count of stories collected and list of story IDs.
+        A dict with ``run_id`` and ``status`` ("started").
     """
-    story_queue = bus.subscribe(CHANNEL_STORY)
-    collector = CollectorAgent(bus=bus, db_conn=db, max_stories=max_stories)
-    collector._session = aiohttp.ClientSession()
+    run_id = _new_run_id()
 
-    try:
-        await collector._poll_once()
-    finally:
-        await collector._session.close()
+    async def _run() -> None:
+        try:
+            collector = CollectorAgent(bus=bus, db_conn=db, max_stories=max_stories)
+            collector._session = aiohttp.ClientSession()
+            try:
+                await collector._poll_once()
+            finally:
+                await collector._session.close()
+        except Exception:
+            logger.exception("collect run %s failed", run_id)
+        finally:
+            request.app.state.active_runs.pop(run_id, None)
 
-    collected_ids: list[int] = []
-    while not story_queue.empty():
-        msg: BusMessage = story_queue.get_nowait()
-        collected_ids.append(msg.payload.story_id)
-
-    return {"stories_collected": len(collected_ids), "story_ids": collected_ids}
+    task = asyncio.create_task(_run())
+    request.app.state.active_runs[run_id] = task
+    return {"run_id": run_id, "status": "started"}
 
 
-@router.post("/score", status_code=200)
+@router.post("/score", status_code=202)
 async def score(
+    request: Request,
     db: sqlite3.Connection = Depends(get_db),
     bus: MessageBus = Depends(get_bus),
-) -> dict[str, Any]:
-    """Score all unscored stories.
+) -> dict[str, str]:
+    """Score all unscored stories as a background task.
 
-    Queries stories that don't have a score yet and runs the scorer
-    on each.
+    Queries stories without a score and runs the scorer on each.
+    Progress streams to WebSocket clients via the bus.
+
+    Args:
+        request: The incoming FastAPI request (for app.state access).
+        db: Database connection.
+        bus: Message bus.
 
     Returns:
-        Count of stories scored.
+        A dict with ``run_id`` and ``status`` ("started").
     """
-    scorer = ScorerAgent(bus=bus, db_conn=db)
+    run_id = _new_run_id()
 
-    rows = db.execute(
-        "SELECT s.id, s.title, s.url, s.score, s.comments, s.posted_at, "
-        "s.hn_type, s.endpoints "
-        "FROM stories s "
-        "LEFT JOIN scores sc ON sc.story_id = s.id "
-        "WHERE sc.id IS NULL"
-    ).fetchall()
+    async def _run() -> None:
+        try:
+            scorer = ScorerAgent(bus=bus, db_conn=db)
 
-    from hndigest.models import StoryPayload
+            rows = db.execute(
+                "SELECT s.id, s.title, s.url, s.score, s.comments, s.posted_at, "
+                "s.hn_type, s.endpoints "
+                "FROM stories s "
+                "LEFT JOIN scores sc ON sc.story_id = s.id "
+                "WHERE sc.id IS NULL"
+            ).fetchall()
 
-    scored_count = 0
-    for row in rows:
-        story_msg = BusMessage(
-            type="story",
-            timestamp=datetime.now(timezone.utc),
-            source="api",
-            payload=StoryPayload(
-                story_id=row[0],
-                title=row[1] or "",
-                url=row[2],
-                score=row[3] or 0,
-                comments=row[4] or 0,
-                posted_at=row[5] or "",
-                hn_type=row[6] or "story",
-                endpoints=json.loads(row[7]) if row[7] else [],
-            ),
-        )
-        await scorer.process(CHANNEL_STORY, story_msg)
-        scored_count += 1
+            for row in rows:
+                story_msg = BusMessage(
+                    type="story",
+                    timestamp=datetime.now(timezone.utc),
+                    source="api",
+                    payload=StoryPayload(
+                        story_id=row[0],
+                        title=row[1] or "",
+                        url=row[2],
+                        score=row[3] or 0,
+                        comments=row[4] or 0,
+                        posted_at=row[5] or "",
+                        hn_type=row[6] or "story",
+                        endpoints=json.loads(row[7]) if row[7] else [],
+                    ),
+                )
+                await scorer.process(CHANNEL_STORY, story_msg)
+        except Exception:
+            logger.exception("score run %s failed", run_id)
+        finally:
+            request.app.state.active_runs.pop(run_id, None)
 
-    return {"stories_scored": scored_count}
+    task = asyncio.create_task(_run())
+    request.app.state.active_runs[run_id] = task
+    return {"run_id": run_id, "status": "started"}
 
 
-@router.post("/categorize", status_code=200)
+@router.post("/categorize", status_code=202)
 async def categorize(
+    request: Request,
     db: sqlite3.Connection = Depends(get_db),
     bus: MessageBus = Depends(get_bus),
-) -> dict[str, Any]:
-    """Categorize all uncategorized stories.
+) -> dict[str, str]:
+    """Categorize all uncategorized stories as a background task.
+
+    Progress streams to WebSocket clients via the bus.
+
+    Args:
+        request: The incoming FastAPI request (for app.state access).
+        db: Database connection.
+        bus: Message bus.
 
     Returns:
-        Count of stories categorized.
+        A dict with ``run_id`` and ``status`` ("started").
     """
-    categorizer = CategorizerAgent(bus=bus, db_conn=db)
+    run_id = _new_run_id()
 
-    rows = db.execute(
-        "SELECT s.id, s.title, s.url, s.hn_type "
-        "FROM stories s "
-        "LEFT JOIN categories c ON c.story_id = s.id "
-        "WHERE c.id IS NULL"
-    ).fetchall()
+    async def _run() -> None:
+        try:
+            categorizer = CategorizerAgent(bus=bus, db_conn=db)
 
-    from hndigest.models import StoryPayload
+            rows = db.execute(
+                "SELECT s.id, s.title, s.url, s.hn_type "
+                "FROM stories s "
+                "LEFT JOIN categories c ON c.story_id = s.id "
+                "WHERE c.id IS NULL"
+            ).fetchall()
 
-    categorized_count = 0
-    for row in rows:
-        story_msg = BusMessage(
-            type="story",
-            timestamp=datetime.now(timezone.utc),
-            source="api",
-            payload=StoryPayload(
-                story_id=row[0],
-                title=row[1] or "",
-                url=row[2],
-                hn_type=row[3] or "story",
-            ),
-        )
-        await categorizer.process(CHANNEL_STORY, story_msg)
-        categorized_count += 1
+            for row in rows:
+                story_msg = BusMessage(
+                    type="story",
+                    timestamp=datetime.now(timezone.utc),
+                    source="api",
+                    payload=StoryPayload(
+                        story_id=row[0],
+                        title=row[1] or "",
+                        url=row[2],
+                        hn_type=row[3] or "story",
+                    ),
+                )
+                await categorizer.process(CHANNEL_STORY, story_msg)
+        except Exception:
+            logger.exception("categorize run %s failed", run_id)
+        finally:
+            request.app.state.active_runs.pop(run_id, None)
 
-    return {"stories_categorized": categorized_count}
+    task = asyncio.create_task(_run())
+    request.app.state.active_runs[run_id] = task
+    return {"run_id": run_id, "status": "started"}
 
 
-@router.post("/orchestrate", status_code=200)
+@router.post("/orchestrate", status_code=202)
 async def orchestrate(
+    request: Request,
     db: sqlite3.Connection = Depends(get_db),
     bus: MessageBus = Depends(get_bus),
-) -> dict[str, Any]:
-    """Run orchestrator on scored stories without dispatch decisions.
+) -> dict[str, str]:
+    """Run orchestrator on scored stories as a background task.
 
     Evaluates priority and budget, dispatches fetch requests for
-    qualifying stories.
+    qualifying stories. Progress streams to WebSocket clients via
+    the bus.
+
+    Args:
+        request: The incoming FastAPI request (for app.state access).
+        db: Database connection.
+        bus: Message bus.
 
     Returns:
-        Counts of dispatched, skipped, and budget_exceeded stories.
+        A dict with ``run_id`` and ``status`` ("started").
     """
-    orchestrator = OrchestratorAgent(bus=bus, db_conn=db)
-    fetch_queue = bus.subscribe(CHANNEL_FETCH_REQUEST)
+    run_id = _new_run_id()
 
-    # Find stories that have scores but no orchestrator decision yet
-    rows = db.execute(
-        "SELECT s.id, s.title, s.url, s.hn_text, s.score, s.comments, "
-        "s.posted_at, s.hn_type, s.endpoints, sc.composite "
-        "FROM stories s "
-        "JOIN scores sc ON sc.story_id = s.id "
-        "LEFT JOIN orchestrator_decisions od ON od.story_id = s.id "
-        "WHERE od.id IS NULL "
-        "ORDER BY sc.composite DESC"
-    ).fetchall()
+    async def _run() -> None:
+        try:
+            orchestrator = OrchestratorAgent(bus=bus, db_conn=db)
 
-    from hndigest.models import ScoreComponents, ScorePayload, StoryPayload
+            rows = db.execute(
+                "SELECT s.id, s.title, s.url, s.hn_text, s.score, s.comments, "
+                "s.posted_at, s.hn_type, s.endpoints, sc.composite "
+                "FROM stories s "
+                "JOIN scores sc ON sc.story_id = s.id "
+                "LEFT JOIN orchestrator_decisions od ON od.story_id = s.id "
+                "WHERE od.id IS NULL "
+                "ORDER BY sc.composite DESC"
+            ).fetchall()
 
-    for row in rows:
-        story_msg = BusMessage(
-            type="story",
-            timestamp=datetime.now(timezone.utc),
-            source="api",
-            payload=StoryPayload(
-                story_id=row[0],
-                title=row[1] or "",
-                url=row[2],
-                hn_text=row[3],
-                score=row[4] or 0,
-                comments=row[5] or 0,
-                posted_at=row[6] or "",
-                hn_type=row[7] or "story",
-                endpoints=json.loads(row[8]) if row[8] else [],
-            ),
-        )
-        await orchestrator.process(CHANNEL_STORY, story_msg)
+            for row in rows:
+                story_msg = BusMessage(
+                    type="story",
+                    timestamp=datetime.now(timezone.utc),
+                    source="api",
+                    payload=StoryPayload(
+                        story_id=row[0],
+                        title=row[1] or "",
+                        url=row[2],
+                        hn_text=row[3],
+                        score=row[4] or 0,
+                        comments=row[5] or 0,
+                        posted_at=row[6] or "",
+                        hn_type=row[7] or "story",
+                        endpoints=json.loads(row[8]) if row[8] else [],
+                    ),
+                )
+                await orchestrator.process(CHANNEL_STORY, story_msg)
 
-        score_msg = BusMessage(
-            type="score",
-            timestamp=datetime.now(timezone.utc),
-            source="api",
-            payload=ScorePayload(
-                story_id=row[0],
-                composite=row[9] or 0.0,
-                components=ScoreComponents(
-                    score_velocity=0, comment_velocity=0,
-                    front_page_presence=0, recency=0,
-                ),
-            ),
-        )
-        await orchestrator.process(CHANNEL_SCORE, score_msg)
+                score_msg = BusMessage(
+                    type="score",
+                    timestamp=datetime.now(timezone.utc),
+                    source="api",
+                    payload=ScorePayload(
+                        story_id=row[0],
+                        composite=row[9] or 0.0,
+                        components=ScoreComponents(
+                            score_velocity=0, comment_velocity=0,
+                            front_page_presence=0, recency=0,
+                        ),
+                    ),
+                )
+                await orchestrator.process(CHANNEL_SCORE, score_msg)
+        except Exception:
+            logger.exception("orchestrate run %s failed", run_id)
+        finally:
+            request.app.state.active_runs.pop(run_id, None)
 
-    # Count decisions
-    decisions = db.execute(
-        "SELECT decision, COUNT(*) FROM orchestrator_decisions "
-        "GROUP BY decision"
-    ).fetchall()
-    result = {row[0]: row[1] for row in decisions}
-
-    dispatched = 0
-    while not fetch_queue.empty():
-        fetch_queue.get_nowait()
-        dispatched += 1
-
-    return {
-        "dispatched": dispatched,
-        "skipped": result.get("skipped", 0),
-        "budget_exceeded": result.get("budget_exceeded", 0),
-    }
+    task = asyncio.create_task(_run())
+    request.app.state.active_runs[run_id] = task
+    return {"run_id": run_id, "status": "started"}
 
 
-@router.post("/fetch/{story_id}", status_code=200)
+@router.post("/fetch/{story_id}", status_code=202)
 async def fetch_story(
     story_id: int,
+    request: Request,
     db: sqlite3.Connection = Depends(get_db),
     bus: MessageBus = Depends(get_bus),
-) -> dict[str, Any]:
-    """Fetch and extract article text for a specific story.
+) -> dict[str, str]:
+    """Fetch and extract article text for a specific story as a background task.
+
+    Progress streams to WebSocket clients via the bus.
 
     Args:
         story_id: The HN story ID to fetch.
+        request: The incoming FastAPI request (for app.state access).
+        db: Database connection.
+        bus: Message bus.
 
     Returns:
-        Fetch status and article text length.
+        A dict with ``run_id`` and ``status`` ("started").
+
+    Raises:
+        HTTPException: If the story is not found (404).
     """
     row = db.execute(
         "SELECT id, title, url, hn_text FROM stories WHERE id = ?",
@@ -268,57 +325,63 @@ async def fetch_story(
     if row is None:
         raise HTTPException(status_code=404, detail=f"Story {story_id} not found")
 
-    from hndigest.models import FetchRequestPayload
+    run_id = _new_run_id()
 
-    fetcher = FetcherAgent(bus=bus, db_conn=db)
-    fetcher._session = aiohttp.ClientSession()
+    async def _run() -> None:
+        try:
+            fetcher = FetcherAgent(bus=bus, db_conn=db)
+            fetcher._session = aiohttp.ClientSession()
 
-    fetch_msg = BusMessage(
-        type="fetch_request",
-        timestamp=datetime.now(timezone.utc),
-        source="api",
-        payload=FetchRequestPayload(
-            story_id=row[0],
-            url=row[2],
-            hn_text=row[3],
-            title=row[1] or "",
-            priority=0.0,
-        ),
-    )
+            fetch_msg = BusMessage(
+                type="fetch_request",
+                timestamp=datetime.now(timezone.utc),
+                source="api",
+                payload=FetchRequestPayload(
+                    story_id=row[0],
+                    url=row[2],
+                    hn_text=row[3],
+                    title=row[1] or "",
+                    priority=0.0,
+                ),
+            )
 
-    try:
-        await fetcher.process(CHANNEL_FETCH_REQUEST, fetch_msg)
-    finally:
-        await fetcher._session.close()
+            try:
+                await fetcher.process(CHANNEL_FETCH_REQUEST, fetch_msg)
+            finally:
+                await fetcher._session.close()
+        except Exception:
+            logger.exception("fetch run %s for story %d failed", run_id, story_id)
+        finally:
+            request.app.state.active_runs.pop(run_id, None)
 
-    article = db.execute(
-        "SELECT fetch_status, LENGTH(text) FROM articles WHERE story_id = ?",
-        (story_id,),
-    ).fetchone()
-
-    return {
-        "story_id": story_id,
-        "fetch_status": article[0] if article else "not_fetched",
-        "text_length": article[1] if article else 0,
-    }
+    task = asyncio.create_task(_run())
+    request.app.state.active_runs[run_id] = task
+    return {"run_id": run_id, "status": "started"}
 
 
-@router.post("/summarize/{story_id}", status_code=200)
+@router.post("/summarize/{story_id}", status_code=202)
 async def summarize_story(
     story_id: int,
+    request: Request,
     db: sqlite3.Connection = Depends(get_db),
     bus: MessageBus = Depends(get_bus),
-) -> dict[str, Any]:
-    """Summarize a specific story via LLM and validate the summary.
+) -> dict[str, str]:
+    """Summarize and validate a specific story as a background task.
 
-    Runs both summarizer and validator. Returns the final summary
-    status (validated, rejected, or no_summary).
+    Runs both summarizer and validator. Progress streams to WebSocket
+    clients via the bus.
 
     Args:
         story_id: The HN story ID to summarize.
+        request: The incoming FastAPI request (for app.state access).
+        db: Database connection.
+        bus: Message bus.
 
     Returns:
-        Summary text and validation status.
+        A dict with ``run_id`` and ``status`` ("started").
+
+    Raises:
+        HTTPException: If the story has no fetched article (400).
     """
     article = db.execute(
         "SELECT story_id FROM articles WHERE story_id = ? AND fetch_status = 'success'",
@@ -330,163 +393,190 @@ async def summarize_story(
             detail=f"Story {story_id} has no fetched article. Fetch it first.",
         )
 
-    from hndigest.models import SummarizeRequestPayload
+    run_id = _new_run_id()
 
-    # Summarize
-    summarizer = SummarizerAgent(bus=bus, db_conn=db)
-    summary_queue = bus.subscribe(CHANNEL_SUMMARY)
-
-    summarize_msg = BusMessage(
-        type="summarize_request",
-        timestamp=datetime.now(timezone.utc),
-        source="api",
-        payload=SummarizeRequestPayload(story_id=story_id, priority=0.0),
-    )
-
-    try:
-        await summarizer.process(CHANNEL_SUMMARIZE_REQUEST, summarize_msg)
-    finally:
-        await summarizer._llm.close()
-
-    # Validate if summary was produced
-    if not summary_queue.empty():
-        summary_msg = summary_queue.get_nowait()
-
-        validator = ValidatorAgent(bus=bus, db_conn=db)
+    async def _run() -> None:
         try:
-            await validator.process(CHANNEL_SUMMARY, summary_msg)
+            summarizer = SummarizerAgent(bus=bus, db_conn=db)
+            summary_queue = bus.subscribe(CHANNEL_SUMMARY)
+
+            summarize_msg = BusMessage(
+                type="summarize_request",
+                timestamp=datetime.now(timezone.utc),
+                source="api",
+                payload=SummarizeRequestPayload(story_id=story_id, priority=0.0),
+            )
+
+            try:
+                await summarizer.process(CHANNEL_SUMMARIZE_REQUEST, summarize_msg)
+            finally:
+                await summarizer._llm.close()
+
+            # Validate if summary was produced
+            if not summary_queue.empty():
+                summary_msg = summary_queue.get_nowait()
+                validator = ValidatorAgent(bus=bus, db_conn=db)
+                try:
+                    await validator.process(CHANNEL_SUMMARY, summary_msg)
+                finally:
+                    await validator._llm.close()
+        except Exception:
+            logger.exception("summarize run %s for story %d failed", run_id, story_id)
         finally:
-            await validator._llm.close()
+            request.app.state.active_runs.pop(run_id, None)
 
-    # Return final state
-    row = db.execute(
-        "SELECT summary_text, status FROM summaries WHERE story_id = ? "
-        "ORDER BY generated_at DESC LIMIT 1",
-        (story_id,),
-    ).fetchone()
-
-    return {
-        "story_id": story_id,
-        "summary_text": row[0] if row else "",
-        "status": row[1] if row else "no_summary",
-    }
+    task = asyncio.create_task(_run())
+    request.app.state.active_runs[run_id] = task
+    return {"run_id": run_id, "status": "started"}
 
 
-@router.post("/pipeline/run", status_code=200)
+@router.post("/pipeline/run", status_code=202)
 async def run_pipeline(
+    request: Request,
     max_stories: int = Query(default=10, ge=1, le=100),
     db: sqlite3.Connection = Depends(get_db),
     bus: MessageBus = Depends(get_bus),
-) -> dict[str, Any]:
-    """Run the full pipeline once: collect → score → categorize → orchestrate → fetch → summarize → validate → digest.
+) -> dict[str, str]:
+    """Run the full pipeline as a background task.
 
-    This is the main endpoint for the frontend to trigger a complete
-    pipeline run and get a digest back.
+    Executes: collect, score, categorize, orchestrate, fetch,
+    summarize, validate, digest. Progress streams to WebSocket
+    clients via the bus as each agent publishes to its channel.
 
     Args:
+        request: The incoming FastAPI request (for app.state access).
         max_stories: Maximum stories to collect.
+        db: Database connection.
+        bus: Message bus.
 
     Returns:
-        Pipeline results including story count, fetch count, summary count,
-        and the generated digest markdown.
+        A dict with ``run_id`` and ``status`` ("started").
     """
-    results: dict[str, Any] = {}
+    run_id = _new_run_id()
 
-    # 1. Collect
-    story_queue = bus.subscribe(CHANNEL_STORY)
-    collector = CollectorAgent(bus=bus, db_conn=db, max_stories=max_stories)
-    collector._session = aiohttp.ClientSession()
-    try:
-        await collector._poll_once()
-    finally:
-        await collector._session.close()
+    async def _run() -> None:
+        try:
+            # 1. Collect
+            story_queue = bus.subscribe(CHANNEL_STORY)
+            collector = CollectorAgent(bus=bus, db_conn=db, max_stories=max_stories)
+            collector._session = aiohttp.ClientSession()
+            try:
+                await collector._poll_once()
+            finally:
+                await collector._session.close()
 
-    story_msgs: list[BusMessage] = []
-    while not story_queue.empty():
-        story_msgs.append(story_queue.get_nowait())
-    results["collected"] = len(story_msgs)
+            story_msgs: list[BusMessage] = []
+            while not story_queue.empty():
+                story_msgs.append(story_queue.get_nowait())
 
-    # 2. Score + Categorize each story
-    scorer = ScorerAgent(bus=bus, db_conn=db)
-    categorizer = CategorizerAgent(bus=bus, db_conn=db)
-    score_queue = bus.subscribe(CHANNEL_SCORE)
+            # 2. Score + Categorize each story
+            scorer = ScorerAgent(bus=bus, db_conn=db)
+            categorizer = CategorizerAgent(bus=bus, db_conn=db)
+            score_queue = bus.subscribe(CHANNEL_SCORE)
 
-    for msg in story_msgs:
-        await scorer.process(CHANNEL_STORY, msg)
-        await categorizer.process(CHANNEL_STORY, msg)
+            for msg in story_msgs:
+                await scorer.process(CHANNEL_STORY, msg)
+                await categorizer.process(CHANNEL_STORY, msg)
 
-    score_msgs: list[BusMessage] = []
-    while not score_queue.empty():
-        score_msgs.append(score_queue.get_nowait())
-    results["scored"] = len(score_msgs)
+            score_msgs: list[BusMessage] = []
+            while not score_queue.empty():
+                score_msgs.append(score_queue.get_nowait())
 
-    # 3. Orchestrate
-    orchestrator = OrchestratorAgent(bus=bus, db_conn=db)
-    fetch_queue = bus.subscribe(CHANNEL_FETCH_REQUEST)
+            # 3. Orchestrate
+            orchestrator = OrchestratorAgent(bus=bus, db_conn=db)
+            fetch_queue = bus.subscribe(CHANNEL_FETCH_REQUEST)
 
-    for msg in story_msgs:
-        await orchestrator.process(CHANNEL_STORY, msg)
-    for msg in score_msgs:
-        await orchestrator.process(CHANNEL_SCORE, msg)
+            for msg in story_msgs:
+                await orchestrator.process(CHANNEL_STORY, msg)
+            for msg in score_msgs:
+                await orchestrator.process(CHANNEL_SCORE, msg)
 
-    fetch_msgs: list[BusMessage] = []
-    while not fetch_queue.empty():
-        fetch_msgs.append(fetch_queue.get_nowait())
-    results["fetch_requests"] = len(fetch_msgs)
+            fetch_msgs: list[BusMessage] = []
+            while not fetch_queue.empty():
+                fetch_msgs.append(fetch_queue.get_nowait())
 
-    # 4. Fetch
-    article_queue = bus.subscribe(CHANNEL_ARTICLE)
-    fetcher = FetcherAgent(bus=bus, db_conn=db)
-    fetcher._session = aiohttp.ClientSession()
-    try:
-        for msg in fetch_msgs:
-            await fetcher.process(CHANNEL_FETCH_REQUEST, msg)
-    finally:
-        await fetcher._session.close()
+            # 4. Fetch
+            article_queue = bus.subscribe(CHANNEL_ARTICLE)
+            fetcher = FetcherAgent(bus=bus, db_conn=db)
+            fetcher._session = aiohttp.ClientSession()
+            try:
+                for msg in fetch_msgs:
+                    await fetcher.process(CHANNEL_FETCH_REQUEST, msg)
+            finally:
+                await fetcher._session.close()
 
-    article_msgs: list[BusMessage] = []
-    while not article_queue.empty():
-        article_msgs.append(article_queue.get_nowait())
-    results["articles_fetched"] = len(article_msgs)
+            article_msgs: list[BusMessage] = []
+            while not article_queue.empty():
+                article_msgs.append(article_queue.get_nowait())
 
-    # 5. Orchestrator dispatches summarize requests for fetched articles
-    summarize_queue = bus.subscribe(CHANNEL_SUMMARIZE_REQUEST)
-    for msg in article_msgs:
-        await orchestrator.process(CHANNEL_ARTICLE, msg)
+            # 5. Orchestrator dispatches summarize requests for fetched articles
+            summarize_queue = bus.subscribe(CHANNEL_SUMMARIZE_REQUEST)
+            for msg in article_msgs:
+                await orchestrator.process(CHANNEL_ARTICLE, msg)
 
-    summarize_msgs: list[BusMessage] = []
-    while not summarize_queue.empty():
-        summarize_msgs.append(summarize_queue.get_nowait())
+            summarize_msgs: list[BusMessage] = []
+            while not summarize_queue.empty():
+                summarize_msgs.append(summarize_queue.get_nowait())
 
-    # 6. Summarize + Validate
-    summary_queue = bus.subscribe(CHANNEL_SUMMARY)
-    summarizer = SummarizerAgent(bus=bus, db_conn=db)
-    validator = ValidatorAgent(bus=bus, db_conn=db)
+            # 6. Summarize + Validate
+            summary_queue = bus.subscribe(CHANNEL_SUMMARY)
+            summarizer = SummarizerAgent(bus=bus, db_conn=db)
+            validator = ValidatorAgent(bus=bus, db_conn=db)
 
-    try:
-        for msg in summarize_msgs:
-            await summarizer.process(CHANNEL_SUMMARIZE_REQUEST, msg)
+            try:
+                for msg in summarize_msgs:
+                    await summarizer.process(CHANNEL_SUMMARIZE_REQUEST, msg)
 
-        validated_count = 0
-        while not summary_queue.empty():
-            summary_msg = summary_queue.get_nowait()
-            await validator.process(CHANNEL_SUMMARY, summary_msg)
-            validated_count += 1
-        results["summaries_processed"] = validated_count
-    finally:
-        await summarizer._llm.close()
-        await validator._llm.close()
+                while not summary_queue.empty():
+                    summary_msg = summary_queue.get_nowait()
+                    await validator.process(CHANNEL_SUMMARY, summary_msg)
+            finally:
+                await summarizer._llm.close()
+                await validator._llm.close()
 
-    # 7. Build digest
-    report_builder = ReportBuilderAgent(bus=bus, db_conn=db)
-    digest = await report_builder._build_digest()
+            # 7. Build digest
+            report_builder = ReportBuilderAgent(bus=bus, db_conn=db)
+            digest = await report_builder._build_digest()
 
-    if digest and digest.get("story_count", 0) > 0:
-        await report_builder._persist_and_publish(digest)
-        results["digest_story_count"] = digest["story_count"]
-        results["digest_md"] = digest["content_md"]
-    else:
-        results["digest_story_count"] = 0
-        results["digest_md"] = ""
+            if digest and digest.get("story_count", 0) > 0:
+                await report_builder._persist_and_publish(digest)
 
-    return results
+        except Exception:
+            logger.exception("pipeline run %s failed", run_id)
+        finally:
+            request.app.state.active_runs.pop(run_id, None)
+
+    task = asyncio.create_task(_run())
+    request.app.state.active_runs[run_id] = task
+    return {"run_id": run_id, "status": "started"}
+
+
+@router.get("/runs/{run_id}")
+async def get_run_status(run_id: str, request: Request) -> dict[str, str]:
+    """Check the status of a background run.
+
+    Looks up the run in ``app.state.active_runs`` and returns its
+    current status: running, completed, failed, or completed_or_unknown
+    (if the run ID is not found, meaning it either completed and was
+    cleaned up, or never existed).
+
+    Args:
+        run_id: The run identifier returned by an action endpoint.
+        request: The incoming FastAPI request (for app.state access).
+
+    Returns:
+        A dict with ``run_id`` and ``status``, plus ``error`` on failure.
+    """
+    runs: dict[str, asyncio.Task[None]] = getattr(
+        request.app.state, "active_runs", {}
+    )
+    task = runs.get(run_id)
+    if task is None:
+        return {"run_id": run_id, "status": "completed_or_unknown"}
+    if task.done():
+        runs.pop(run_id, None)
+        exc = task.exception()
+        if exc:
+            return {"run_id": run_id, "status": "failed", "error": str(exc)}
+        return {"run_id": run_id, "status": "completed"}
+    return {"run_id": run_id, "status": "running"}

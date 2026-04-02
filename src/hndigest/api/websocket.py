@@ -1,8 +1,9 @@
 """WebSocket endpoint for real-time event streaming.
 
-Subscribes to the message bus story, digest, and score channels and
-broadcasts each ``BusMessage`` as JSON to all connected WebSocket clients.
-A keepalive ping is sent when no events arrive within the timeout window.
+Subscribes to ALL data channels on the message bus and broadcasts each
+``BusMessage`` as a structured JSON event to all connected WebSocket
+clients. A keepalive ping is sent when no events arrive within the
+timeout window.
 """
 
 from __future__ import annotations
@@ -12,11 +13,35 @@ import logging
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from hndigest.bus import CHANNEL_DIGEST, CHANNEL_SCORE, CHANNEL_STORY, MessageBus
+from hndigest.bus import (
+    CHANNEL_ARTICLE,
+    CHANNEL_CATEGORY,
+    CHANNEL_DIGEST,
+    CHANNEL_FETCH_REQUEST,
+    CHANNEL_SCORE,
+    CHANNEL_STORY,
+    CHANNEL_SUMMARIZE_REQUEST,
+    CHANNEL_SUMMARY,
+    CHANNEL_VALIDATED_SUMMARY,
+    MessageBus,
+)
 from hndigest.models import BusMessage
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["websocket"])
+
+# Map bus channels to human-readable frontend event names.
+CHANNEL_EVENT_MAP: dict[str, str] = {
+    CHANNEL_STORY: "story_collected",
+    CHANNEL_SCORE: "story_scored",
+    CHANNEL_CATEGORY: "story_categorized",
+    CHANNEL_FETCH_REQUEST: "story_dispatched",
+    CHANNEL_ARTICLE: "article_fetched",
+    CHANNEL_SUMMARIZE_REQUEST: "summarize_requested",
+    CHANNEL_SUMMARY: "summary_generated",
+    CHANNEL_VALIDATED_SUMMARY: "summary_validated",
+    CHANNEL_DIGEST: "digest_ready",
+}
 
 
 class ConnectionManager:
@@ -74,34 +99,37 @@ manager = ConnectionManager()
 async def websocket_events(websocket: WebSocket) -> None:
     """WebSocket endpoint for live event streaming.
 
-    Subscribes to the story, digest, and score bus channels via the
-    supervisor stored in ``app.state``.  Each ``BusMessage`` received
-    from any channel is serialised to JSON and broadcast to all
-    connected clients.  A keepalive ``{"event": "ping"}`` is sent when
-    no bus events arrive within 30 seconds.
+    Subscribes to all data channels on the message bus and broadcasts
+    each ``BusMessage`` as a structured JSON event to all connected
+    clients. Events include a human-readable ``event`` name, the
+    ``source`` agent, an ISO 8601 ``timestamp``, and the full payload
+    data. A keepalive ``{"event": "ping"}`` is sent when no bus events
+    arrive within 30 seconds.
 
     Args:
         websocket: The incoming WebSocket connection.
     """
     await manager.connect(websocket)
 
-    # Get supervisor from app state to access the bus
-    supervisor = websocket.app.state.supervisor
-    bus: MessageBus = supervisor.bus
+    # Get bus from app state (works for both supervisor and passive modes)
+    bus: MessageBus
+    supervisor = getattr(websocket.app.state, "supervisor", None)
+    if supervisor is not None and hasattr(supervisor, "bus"):
+        bus = supervisor.bus
+    else:
+        bus = websocket.app.state.bus
 
-    # Subscribe to channels
-    story_queue: asyncio.Queue[BusMessage] = bus.subscribe(CHANNEL_STORY)
-    digest_queue: asyncio.Queue[BusMessage] = bus.subscribe(CHANNEL_DIGEST)
-    score_queue: asyncio.Queue[BusMessage] = bus.subscribe(CHANNEL_SCORE)
+    # Subscribe to ALL data channels
+    queues: dict[str, asyncio.Queue[BusMessage]] = {}
+    for channel in CHANNEL_EVENT_MAP:
+        queues[channel] = bus.subscribe(channel)
 
     try:
         while True:
-            # Watch all queues with a timeout
-            tasks = {
-                asyncio.create_task(story_queue.get()): "story",
-                asyncio.create_task(digest_queue.get()): "digest",
-                asyncio.create_task(score_queue.get()): "score",
-            }
+            # Create a get-task for each subscribed queue
+            tasks: dict[asyncio.Task[BusMessage], str] = {}
+            for channel, queue in queues.items():
+                tasks[asyncio.create_task(queue.get())] = channel
 
             done, pending = await asyncio.wait(
                 tasks.keys(),
@@ -120,14 +148,13 @@ async def websocket_events(websocket: WebSocket) -> None:
                 channel = tasks[task]
                 try:
                     message: BusMessage = task.result()
-                    # Serialize using Pydantic v2
+                    event_name = CHANNEL_EVENT_MAP.get(channel, channel)
                     await manager.broadcast(
                         {
-                            "event": channel,
-                            "type": message.type,
-                            "source": message.source,
+                            "event": event_name,
                             "timestamp": message.timestamp.isoformat(),
-                            "payload": message.payload.model_dump(),
+                            "source": message.source,
+                            "data": message.payload.model_dump(),
                         }
                     )
                 except Exception:
