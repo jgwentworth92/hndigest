@@ -15,8 +15,11 @@ COPY db/ db/
 
 RUN pip install --no-cache-dir .
 
-# Create output directory
-RUN mkdir -p /app/output/digests
+# Create output and data directories
+RUN mkdir -p /app/output/digests /app/data
+
+# Set base directory so paths.py resolves config/db/output from /app
+ENV HNDIGEST_BASE_DIR=/app
 
 EXPOSE 8000
 

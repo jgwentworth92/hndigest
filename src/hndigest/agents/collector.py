@@ -156,8 +156,15 @@ class CollectorAgent(BaseAgent):
 
         system_queue = self._queues.get(SYSTEM_CHANNEL)
         elapsed = 0.0
+        last_hb = time.monotonic()
 
         while elapsed < duration and not self._shutdown:
+            # Emit heartbeat during long sleeps
+            now_mono = time.monotonic()
+            if now_mono - last_hb >= HEARTBEAT_INTERVAL_SECONDS:
+                await self._emit_heartbeat()
+                last_hb = now_mono
+
             chunk = min(_SHUTDOWN_CHECK_INTERVAL, duration - elapsed)
             if system_queue is not None:
                 try:

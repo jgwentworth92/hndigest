@@ -37,7 +37,9 @@ from hndigest.models import (
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[3] / "config" / "orchestrator.yaml"
+from hndigest.paths import ORCHESTRATOR_CONFIG
+
+_DEFAULT_CONFIG_PATH = ORCHESTRATOR_CONFIG
 
 
 class OrchestratorAgent(BaseAgent):
