@@ -12,10 +12,9 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Resolve the migrations directory relative to the project root.
-# Layout: src/hndigest/db/__init__.py -> project root is 4 levels up.
-_PROJECT_ROOT = Path(__file__).resolve().parents[3]
-_MIGRATIONS_DIR = _PROJECT_ROOT / "db" / "migrations"
+from hndigest.paths import MIGRATIONS_DIR
+
+_MIGRATIONS_DIR = MIGRATIONS_DIR
 
 
 def _bootstrap_schema_version(conn: sqlite3.Connection) -> None:

@@ -1,17 +1,23 @@
-"""Agent and health endpoints: agent registry, system health, and category breakdown."""
+"""Agent status and system health endpoints.
+
+In server mode, agents don't auto-run. The health endpoint reports
+API server status and database connectivity. The agents endpoint
+shows the last known state from the database (orchestrator decisions,
+story counts, etc.) rather than live agent heartbeats.
+"""
 
 from __future__ import annotations
 
 import logging
 import sqlite3
 import time
+from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Request
 
-from hndigest.api.deps import get_db, get_supervisor
-from hndigest.api.schemas import AgentStatus, CategoryCount, HealthResponse
-from hndigest.supervisor import Supervisor
+from hndigest.api.deps import get_db
+from hndigest.api.schemas import CategoryCount, HealthResponse
 
 logger = logging.getLogger(__name__)
 
@@ -19,81 +25,33 @@ router = APIRouter(tags=["agents"])
 
 
 @router.get("/health", response_model=HealthResponse)
-async def health(
-    request: Request,
-    supervisor: Supervisor = Depends(get_supervisor),
-) -> dict[str, Any]:
-    """Return system health including agent statuses and uptime.
-
-    Computes uptime from the monotonic start time stored in app.state
-    during the lifespan startup. Reports overall status as "healthy"
-    when all agents are running, or "degraded" otherwise.
+async def health(request: Request) -> dict[str, Any]:
+    """Return system health: API uptime and database status.
 
     Args:
-        request: The incoming FastAPI request (used to access app.state).
-        supervisor: Injected supervisor instance.
+        request: The incoming FastAPI request.
 
     Returns:
-        Health response with overall status, uptime, and per-agent statuses.
+        Health response with status and uptime.
     """
-    if supervisor is None:
-        started_at = getattr(request.app.state, "started_at_monotonic", None)
-        uptime = round(time.monotonic() - started_at, 1) if started_at else 0.0
-        return {"status": "no_supervisor", "uptime_seconds": uptime, "agents": {}}
-
-    statuses = supervisor.agent_statuses
-
-    # Compute uptime from the monotonic start time stored during lifespan.
     started_at = getattr(request.app.state, "started_at_monotonic", None)
-    if started_at is not None:
-        uptime_seconds = round(time.monotonic() - started_at, 1)
-    else:
-        uptime_seconds = 0.0
+    uptime = round(time.monotonic() - started_at, 1) if started_at else 0.0
 
-    # Determine overall status.
-    all_running = all(s["status"] == "running" for s in statuses.values())
-    overall = "healthy" if all_running else "degraded"
-
-    agents = {
-        name: AgentStatus(
-            name=name,
-            status=info["status"],
-            last_heartbeat_ago=info["last_heartbeat_ago"],
-            messages_processed=info["messages_processed"],
-            restart_count=info["restart_count"],
-        )
-        for name, info in statuses.items()
-    }
+    # Check DB connectivity
+    db_ok = False
+    try:
+        db: sqlite3.Connection = request.app.state.db_conn
+        db.execute("SELECT 1").fetchone()
+        db_ok = True
+    except Exception:
+        pass
 
     return {
-        "status": overall,
-        "uptime_seconds": uptime_seconds,
-        "agents": agents,
-    }
-
-
-@router.get("/agents", response_model=dict[str, AgentStatus])
-async def list_agents(
-    supervisor: Supervisor = Depends(get_supervisor),
-) -> dict[str, AgentStatus]:
-    """Return the current status of all registered agents.
-
-    Args:
-        supervisor: Injected supervisor instance.
-
-    Returns:
-        Mapping of agent name to its current status snapshot.
-    """
-    statuses = supervisor.agent_statuses
-    return {
-        name: AgentStatus(
-            name=name,
-            status=info["status"],
-            last_heartbeat_ago=info["last_heartbeat_ago"],
-            messages_processed=info["messages_processed"],
-            restart_count=info["restart_count"],
-        )
-        for name, info in statuses.items()
+        "status": "healthy" if db_ok else "degraded",
+        "uptime_seconds": uptime,
+        "agents": {},
+        "mode": "server",
+        "database": "connected" if db_ok else "error",
     }
 
 
@@ -101,28 +59,25 @@ async def list_agents(
 async def category_breakdown(
     db: sqlite3.Connection = Depends(get_db),
 ) -> list[dict[str, Any]]:
-    """Return the count of distinct stories per category for today.
-
-    Groups categories assigned today by category slug and counts distinct
-    story IDs in each group.
+    """Return category counts for today's stories.
 
     Args:
-        db: Injected database connection.
+        db: Database connection.
 
     Returns:
-        List of category-count pairs ordered by count descending.
+        List of category/count pairs ordered by count descending.
     """
-    try:
-        db.row_factory = sqlite3.Row
-        cursor = db.execute(
-            "SELECT category, COUNT(DISTINCT story_id) AS count "
-            "FROM categories "
-            "WHERE date(categorized_at) = date('now') "
-            "GROUP BY category "
-            "ORDER BY count DESC"
-        )
-        rows = cursor.fetchall()
-        return [{"category": row["category"], "count": row["count"]} for row in rows]
-    except sqlite3.Error as exc:
-        logger.exception("Failed to query category breakdown")
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today_start = today_str + "T00:00:00+00:00"
+
+    rows = db.execute(
+        "SELECT c.category, COUNT(DISTINCT c.story_id) AS cnt "
+        "FROM categories c "
+        "JOIN stories s ON s.id = c.story_id "
+        "WHERE s.posted_at >= ? "
+        "GROUP BY c.category "
+        "ORDER BY cnt DESC",
+        (today_start,),
+    ).fetchall()
+
+    return [{"category": row[0], "count": row[1]} for row in rows]

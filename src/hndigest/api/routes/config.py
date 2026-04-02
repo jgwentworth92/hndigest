@@ -13,8 +13,9 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["config"])
 
-# Config directory relative to project root.
-_CONFIG_DIR = Path(__file__).resolve().parents[4] / "config"
+from hndigest.paths import CONFIG_DIR
+
+_CONFIG_DIR = CONFIG_DIR
 
 # Config files to load and expose.
 _CONFIG_FILES = ("scoring.yaml", "orchestrator.yaml", "llm.yaml", "categories.yaml")

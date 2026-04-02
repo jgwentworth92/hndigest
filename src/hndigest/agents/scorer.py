@@ -20,7 +20,9 @@ from hndigest.models import BusMessage, ScoreComponents, ScorePayload, StoryPayl
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[3] / "config" / "scoring.yaml"
+from hndigest.paths import SCORING_CONFIG
+
+_DEFAULT_CONFIG_PATH = SCORING_CONFIG
 
 
 class ScorerAgent(BaseAgent):

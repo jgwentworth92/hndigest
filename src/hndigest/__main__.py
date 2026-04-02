@@ -133,7 +133,8 @@ def main() -> None:
 
     from dotenv import load_dotenv
 
-    load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+    from hndigest.paths import ENV_FILE
+    load_dotenv(ENV_FILE)
 
     logging.basicConfig(
         level=logging.INFO,

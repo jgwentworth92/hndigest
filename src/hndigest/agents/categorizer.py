@@ -15,9 +15,9 @@ from hndigest.models import BusMessage, CategoryAssignment, CategoryPayload, Sto
 
 logger = logging.getLogger(__name__)
 
-# Project root: three levels up from this file (src/hndigest/agents/ -> project root).
-_PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[3]
-_DEFAULT_CONFIG_PATH = _PROJECT_ROOT / "config" / "categories.yaml"
+from hndigest.paths import CATEGORIES_CONFIG
+
+_DEFAULT_CONFIG_PATH = CATEGORIES_CONFIG
 
 
 class CategorizerAgent(BaseAgent):

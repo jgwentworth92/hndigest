@@ -22,8 +22,10 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[3] / "config" / "llm.yaml"
-_DEFAULT_PROMPTS_PATH = Path(__file__).resolve().parents[3] / "config" / "prompts.yaml"
+from hndigest.paths import LLM_CONFIG, PROMPTS_CONFIG
+
+_DEFAULT_CONFIG_PATH = LLM_CONFIG
+_DEFAULT_PROMPTS_PATH = PROMPTS_CONFIG
 
 # Environment variable names per provider
 class LLMTransientError(RuntimeError):

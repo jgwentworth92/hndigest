@@ -9,10 +9,10 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from hndigest.api.deps import get_db, get_supervisor
+from hndigest.api.deps import get_bus, get_db
 from hndigest.api.schemas import DigestDetail, DigestGenerateResponse, DigestSummary
 from hndigest.agents.report_builder import ReportBuilderAgent
-from hndigest.supervisor import Supervisor
+from hndigest.bus import MessageBus
 
 logger = logging.getLogger(__name__)
 
@@ -163,35 +163,21 @@ async def get_digest(
 @router.post("/digests/generate", response_model=DigestGenerateResponse, status_code=201)
 async def generate_digest(
     db: sqlite3.Connection = Depends(get_db),
-    supervisor: Supervisor = Depends(get_supervisor),
+    bus: MessageBus = Depends(get_bus),
 ) -> dict[str, Any]:
-    """Trigger on-demand digest generation.
-
-    Creates a temporary ReportBuilderAgent connected to the supervisor's
-    message bus, builds a digest covering the current period, persists it
-    to the database, and returns the result.
+    """Trigger on-demand digest generation from current data.
 
     Args:
         db: Injected database connection.
-        supervisor: Injected supervisor instance.
+        bus: Injected message bus.
 
     Returns:
         Generated digest metadata including story count and markdown content.
-
-    Raises:
-        HTTPException: 500 if digest generation fails.
     """
     try:
-        bus = supervisor.bus
-        if bus is None:
-            raise HTTPException(
-                status_code=500, detail="Supervisor bus not available"
-            )
-
         builder = ReportBuilderAgent(bus=bus, db_conn=db)
         digest = await builder._build_digest()
 
-        # Persist the digest to the database.
         if digest["story_count"] > 0:
             await builder._persist_and_publish(digest)
 
@@ -201,8 +187,6 @@ async def generate_digest(
             "period_start": digest["period_start"],
             "period_end": digest["period_end"],
         }
-    except HTTPException:
-        raise
     except Exception as exc:
         logger.exception("Failed to generate digest")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
