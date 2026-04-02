@@ -6,6 +6,8 @@ dist/
 build/
 .eggs/
 *.db
+*.db-shm
+*.db-wal
 *.sqlite3
 .env
 .venv/
