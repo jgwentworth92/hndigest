@@ -667,30 +667,36 @@ Single-page application served by FastAPI. Connects to WebSocket for live update
 - [ ] Orchestrator optional LLM mode for ambiguous prioritization
 - [ ] End-to-end test: full pipeline with validated summaries in digest
 
-### Phase 5: Chat Agent
-- [ ] Chat agent with ReAct loop
-- [ ] Analytics MCP server with 12 query tools
-- [ ] chat_sessions and chat_messages tables
-- [ ] CLI: hndigest chat "query"
-- [ ] End-to-end test: chat query -> tool calls -> response
-
-### Phase 6: FastAPI Backend + Docker
+### Phase 5: FastAPI Backend + Docker
 - [ ] FastAPI app with lifespan managing supervisor startup/shutdown
 - [ ] Two startup modes: `--mode server` (default, agents + API) and `--mode cli` (agents only)
 - [ ] REST endpoints: /api/health, /api/digests, /api/stories, /api/categories, /api/agents, /api/config
-- [ ] POST /api/digests/generate for on-demand digest
-- [ ] WebSocket /api/events broadcasting story and digest events from message bus
+- [ ] Action endpoints (202 async): /api/collect, /api/score, /api/categorize, /api/orchestrate, /api/fetch/{id}, /api/summarize/{id}, /api/pipeline/run, /api/digests/generate
+- [ ] Run tracking: GET /api/runs, GET /api/runs/{run_id}
+- [ ] WebSocket /api/events: all data channels + system channel (agent heartbeats)
+- [ ] Pipeline progress events during long-running actions
 - [ ] CORS enabled for Next.js dev server
 - [ ] Dockerfile + docker-compose.yaml with volume mounts for DB and config
 - [ ] End-to-end API tests
 
-### Phase 7: Web Dashboard + Chat Agent
+### Phase 6: Web Dashboard
 - [ ] Next.js dashboard consuming FastAPI REST + WebSocket
-- [ ] Chat agent with ReAct loop (ADR pending)
+- [ ] Daily Digest view: latest digest grouped by category, historical browsing
+- [ ] Story Detail view: full pipeline data chain for a single story
+- [ ] Live Feed view: real-time pipeline activity, action triggers, progress tracking
+- [ ] System view: agent status, category breakdown, configuration
+- [ ] WebSocket reconnect with REST refetch recovery
+- [ ] Frontend Docker container in docker-compose.yaml
+- [ ] End-to-end dashboard tests
+
+### Phase 7: Chat Agent (future, deferred)
+- [ ] Chat agent with ReAct loop
 - [ ] Analytics MCP server with 12 query tools
-- [ ] Chat view in dashboard with streaming responses
-- [ ] Historical digest browsing
-- [ ] Documentation
+- [ ] chat_sessions and chat_messages tables
+- [ ] CLI: hndigest chat "query"
+- [ ] POST /api/chat endpoint
+- [ ] Chat view in dashboard
+- [ ] End-to-end test: chat query -> tool calls -> response
 
 ---
 

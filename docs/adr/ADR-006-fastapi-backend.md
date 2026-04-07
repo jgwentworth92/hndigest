@@ -249,3 +249,150 @@ Each bus message is translated to a frontend-friendly event name.
 ### Run tracking
 
 Active pipeline runs are tracked in `app.state.active_runs: dict[str, asyncio.Task]`. The `GET /api/runs/{run_id}` endpoint returns the current status. Completed runs are cleaned up after a configurable TTL.
+
+---
+
+## Amendment 2: WebSocket reliability and frontend support
+
+### Problem
+
+Amendment 1 made the frontend WebSocket-driven, but left gaps that make the frontend fragile:
+
+1. **No missed-event recovery.** If the WebSocket disconnects mid-pipeline, the frontend has no way to catch up. It shows stale state until manually refreshed.
+2. **No active run discovery.** `GET /api/runs/{run_id}` exists but requires knowing the run ID. On reconnect the frontend doesn't know what runs are in flight.
+3. **No aggregate pipeline progress.** The WebSocket emits per-story events during `/api/pipeline/run`, but no summary. The frontend must count individual events to show progress — error-prone and lost on reconnect.
+4. **Agent heartbeats not broadcast.** The WebSocket subscribes to data channels but not the `system` channel. The frontend has to poll `GET /api/agents` for live status instead of receiving heartbeat events.
+
+### Decisions
+
+#### Recovery strategy: REST refetch on reconnect
+
+| Option | Pros | Cons |
+|---|---|---|
+| Event log endpoint with ring buffer | Granular catch-up, no data loss for short disconnects | New infrastructure, memory management, TTL complexity |
+| REST refetch on reconnect | No new infrastructure, REST endpoints already return current state | Loses granular progress for in-flight runs |
+
+**Decision:** REST refetch on reconnect. When the WebSocket reconnects, the frontend re-fetches current state from REST endpoints (`/api/runs`, `/api/agents`, `/api/digests/latest`). This is simple, uses existing endpoints, and covers the common case (short disconnects during pipeline runs). The frontend does not need to replay individual events.
+
+#### Active run list endpoint
+
+Add `GET /api/runs` to return all active and recently completed runs:
+
+| Endpoint | Method | Description | Response |
+|---|---|---|---|
+| `/api/runs` | GET | List active and recent runs | `list[RunStatus]` |
+
+Response shape:
+```json
+[
+  {
+    "run_id": "abc123",
+    "type": "pipeline",
+    "status": "running",
+    "started_at": "2026-04-07T12:00:00+00:00",
+    "progress": {"collected": 45, "scored": 45, "fetched": 12, "summarized": 8}
+  }
+]
+```
+
+This lets the frontend recover state on reconnect without knowing run IDs in advance.
+
+#### Pipeline progress events
+
+During `POST /api/pipeline/run`, emit periodic `pipeline_progress` events on the WebSocket summarizing aggregate counts:
+
+```json
+{
+  "event": "pipeline_progress",
+  "run_id": "abc123",
+  "timestamp": "2026-04-07T12:01:00+00:00",
+  "data": {
+    "collected": 45,
+    "scored": 45,
+    "categorized": 40,
+    "fetched": 12,
+    "summarized": 8,
+    "validated": 6,
+    "total_stories": 45
+  }
+}
+```
+
+Emitted after each stage completes and on a 5-second interval during long-running stages. The frontend can show a single progress bar from this without counting individual events.
+
+#### System channel on WebSocket
+
+Add the `system` bus channel to the WebSocket subscription list. The WebSocket now subscribes to:
+
+- All data channels: story, fetch_request, article, summarize_request, score, category, summary, validated_summary, digest
+- System channel: agent heartbeats, lifecycle events
+
+Agent heartbeat events are broadcast as:
+```json
+{
+  "event": "agent_heartbeat",
+  "timestamp": "2026-04-07T12:00:30+00:00",
+  "data": {
+    "agent": "collector",
+    "status": "running",
+    "last_heartbeat": "2026-04-07T12:00:30+00:00",
+    "messages_processed": 142
+  }
+}
+```
+
+This eliminates the need to poll `GET /api/agents` for the live Agents view.
+
+#### Drop chat endpoint
+
+The `POST /api/chat` endpoint is removed from ADR-006 scope. Chat functionality (chat agent, analytics-mcp, chat_sessions/chat_messages tables) is deferred to a future phase. The frontend is a read-only dashboard with action triggers, not a conversational interface.
+
+### Updated endpoint summary
+
+**Read endpoints** (return data from SQLite):
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `GET /api/health` | GET | System health: uptime, database status |
+| `GET /api/digests` | GET | List recent digests. Params: limit, since |
+| `GET /api/digests/latest` | GET | Most recent digest |
+| `GET /api/digests/{id}` | GET | Specific digest |
+| `GET /api/stories` | GET | Query stories. Params: category, min_score, since, limit |
+| `GET /api/stories/{id}` | GET | Full story detail |
+| `GET /api/categories` | GET | Category breakdown for current period |
+| `GET /api/agents` | GET | Agent registry (fallback for when WebSocket unavailable) |
+| `GET /api/config` | GET | Current configuration |
+| `GET /api/runs` | GET | Active and recently completed runs |
+| `GET /api/runs/{run_id}` | GET | Status of a specific run |
+
+**Action endpoints** (202 + background task, progress via WebSocket):
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `POST /api/collect` | POST | Collect stories from HN API |
+| `POST /api/score` | POST | Score all unscored stories |
+| `POST /api/categorize` | POST | Categorize all uncategorized stories |
+| `POST /api/orchestrate` | POST | Run orchestrator on pending stories |
+| `POST /api/fetch/{id}` | POST | Fetch article for a specific story |
+| `POST /api/summarize/{id}` | POST | Summarize and validate a specific story |
+| `POST /api/pipeline/run` | POST | Full pipeline run |
+| `POST /api/digests/generate` | POST | Build digest from current data |
+
+**WebSocket:**
+
+| Endpoint | Description |
+|---|---|
+| `/api/events` | Live event stream. Subscribes to all data channels AND system channel. Events include per-story pipeline events, pipeline_progress summaries, agent heartbeats, and digest completions. |
+
+### Implementation additions
+
+These items are added to ADR-006's implementation plan:
+
+- [ ] Add `GET /api/runs` endpoint returning active and recent runs from `app.state.active_runs`
+- [ ] Add `pipeline_progress` event emission during pipeline runs (after each stage + 5s interval)
+- [ ] Subscribe WebSocket handler to system bus channel for agent heartbeats
+- [ ] Translate agent heartbeat bus messages to `agent_heartbeat` WebSocket events
+- [ ] Remove `POST /api/chat` from implementation scope
+- [ ] Test: WebSocket reconnect → REST refetch recovers current state
+- [ ] Test: `GET /api/runs` returns active runs during pipeline execution
+- [ ] Test: `pipeline_progress` events emitted during `/api/pipeline/run`
