@@ -1,3 +1,5 @@
+import { DigestView } from "@/components/digest/DigestView";
+
 export default function Home() {
-  return <h1 className="text-2xl font-bold">hndigest</h1>;
+  return <DigestView />;
 }
