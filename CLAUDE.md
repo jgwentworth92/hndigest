@@ -6,6 +6,12 @@
 - asyncio for all concurrency. No threads, no multiprocessing.
 - Entry point: `python -m hndigest`
 
+## Environment
+
+- Never run `pip install` directly on the host. All package installs must happen inside Docker containers or an activated virtual environment.
+- Use Docker or `docker compose` for running the application and tests.
+- For syntax/import checks without running, use `python -c "import ast; ast.parse(open('file.py').read())"`.
+
 ## Dependencies
 
 Only these external packages are permitted:
