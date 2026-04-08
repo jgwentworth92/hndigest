@@ -8,6 +8,7 @@ to connected WebSocket clients via the message bus.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import logging
 import sqlite3
@@ -27,6 +28,7 @@ from hndigest.agents.scorer import ScorerAgent
 from hndigest.agents.summarizer import SummarizerAgent
 from hndigest.agents.validator import ValidatorAgent
 from hndigest.api.deps import get_bus, get_db
+from hndigest.api.schemas import PipelineProgress, RunStatus
 from hndigest.bus import (
     CHANNEL_ARTICLE,
     CHANNEL_FETCH_REQUEST,
@@ -34,12 +36,14 @@ from hndigest.bus import (
     CHANNEL_STORY,
     CHANNEL_SUMMARIZE_REQUEST,
     CHANNEL_SUMMARY,
+    CHANNEL_SYSTEM,
     CHANNEL_VALIDATED_SUMMARY,
     MessageBus,
 )
 from hndigest.models import (
     BusMessage,
     FetchRequestPayload,
+    PipelineProgressPayload,
     ScoreComponents,
     ScorePayload,
     StoryPayload,
@@ -51,6 +55,16 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["actions"])
 
 
+@dataclasses.dataclass
+class RunEntry:
+    """Metadata for a tracked background run."""
+
+    task: asyncio.Task[None]
+    run_type: str
+    started_at: str
+    progress: PipelineProgress | None = None
+
+
 def _new_run_id() -> str:
     """Generate a short unique run identifier.
 
@@ -58,6 +72,62 @@ def _new_run_id() -> str:
         A 12-character hex string derived from a UUID4.
     """
     return uuid.uuid4().hex[:12]
+
+
+def _register_run(
+    request: Request,
+    run_id: str,
+    task: asyncio.Task[None],
+    run_type: str,
+    progress: PipelineProgress | None = None,
+) -> None:
+    """Store a RunEntry in app.state.active_runs.
+
+    Args:
+        request: The incoming FastAPI request (for app.state access).
+        run_id: Unique run identifier.
+        task: The background asyncio task.
+        run_type: Action type (e.g. "collect", "pipeline").
+        progress: Optional pipeline progress tracker.
+    """
+    request.app.state.active_runs[run_id] = RunEntry(
+        task=task,
+        run_type=run_type,
+        started_at=datetime.now(timezone.utc).isoformat(),
+        progress=progress,
+    )
+
+
+def _remove_run(request: Request, run_id: str) -> None:
+    """Remove a completed run from app.state.active_runs.
+
+    Args:
+        request: The incoming FastAPI request.
+        run_id: The run to remove.
+    """
+    request.app.state.active_runs.pop(run_id, None)
+
+
+def _task_status(task: asyncio.Task[None]) -> str:
+    """Determine the status string for a background task.
+
+    Handles CancelledError safely when checking for exceptions.
+
+    Args:
+        task: The asyncio task to inspect.
+
+    Returns:
+        "running", "completed", "cancelled", or "failed".
+    """
+    if not task.done():
+        return "running"
+    if task.cancelled():
+        return "cancelled"
+    try:
+        exc = task.exception()
+    except asyncio.CancelledError:
+        return "cancelled"
+    return "failed" if exc else "completed"
 
 
 @router.post("/collect", status_code=202)
@@ -95,10 +165,10 @@ async def collect(
         except Exception:
             logger.exception("collect run %s failed", run_id)
         finally:
-            request.app.state.active_runs.pop(run_id, None)
+            _remove_run(request, run_id)
 
     task = asyncio.create_task(_run())
-    request.app.state.active_runs[run_id] = task
+    _register_run(request, run_id, task, "collect")
     return {"run_id": run_id, "status": "started"}
 
 
@@ -155,10 +225,10 @@ async def score(
         except Exception:
             logger.exception("score run %s failed", run_id)
         finally:
-            request.app.state.active_runs.pop(run_id, None)
+            _remove_run(request, run_id)
 
     task = asyncio.create_task(_run())
-    request.app.state.active_runs[run_id] = task
+    _register_run(request, run_id, task, "score")
     return {"run_id": run_id, "status": "started"}
 
 
@@ -209,10 +279,10 @@ async def categorize(
         except Exception:
             logger.exception("categorize run %s failed", run_id)
         finally:
-            request.app.state.active_runs.pop(run_id, None)
+            _remove_run(request, run_id)
 
     task = asyncio.create_task(_run())
-    request.app.state.active_runs[run_id] = task
+    _register_run(request, run_id, task, "categorize")
     return {"run_id": run_id, "status": "started"}
 
 
@@ -288,10 +358,10 @@ async def orchestrate(
         except Exception:
             logger.exception("orchestrate run %s failed", run_id)
         finally:
-            request.app.state.active_runs.pop(run_id, None)
+            _remove_run(request, run_id)
 
     task = asyncio.create_task(_run())
-    request.app.state.active_runs[run_id] = task
+    _register_run(request, run_id, task, "orchestrate")
     return {"run_id": run_id, "status": "started"}
 
 
@@ -352,10 +422,10 @@ async def fetch_story(
         except Exception:
             logger.exception("fetch run %s for story %d failed", run_id, story_id)
         finally:
-            request.app.state.active_runs.pop(run_id, None)
+            _remove_run(request, run_id)
 
     task = asyncio.create_task(_run())
-    request.app.state.active_runs[run_id] = task
+    _register_run(request, run_id, task, "fetch")
     return {"run_id": run_id, "status": "started"}
 
 
@@ -423,10 +493,10 @@ async def summarize_story(
         except Exception:
             logger.exception("summarize run %s for story %d failed", run_id, story_id)
         finally:
-            request.app.state.active_runs.pop(run_id, None)
+            _remove_run(request, run_id)
 
     task = asyncio.create_task(_run())
-    request.app.state.active_runs[run_id] = task
+    _register_run(request, run_id, task, "summarize")
     return {"run_id": run_id, "status": "started"}
 
 
@@ -453,9 +523,42 @@ async def run_pipeline(
         A dict with ``run_id`` and ``status`` ("started").
     """
     run_id = _new_run_id()
+    progress = PipelineProgress()
+
+    async def _emit_progress(bus: MessageBus, progress: PipelineProgress) -> None:
+        """Publish a pipeline_progress event to the system channel."""
+        await bus.publish(
+            CHANNEL_SYSTEM,
+            BusMessage(
+                type="pipeline_progress",
+                timestamp=datetime.now(timezone.utc),
+                source="api",
+                payload=PipelineProgressPayload(
+                    run_id=run_id,
+                    collected=progress.collected,
+                    scored=progress.scored,
+                    categorized=progress.categorized,
+                    fetched=progress.fetched,
+                    summarized=progress.summarized,
+                    validated=progress.validated,
+                    total_stories=progress.total_stories,
+                ),
+            ),
+        )
 
     async def _run() -> None:
         try:
+            # Publish pipeline_started
+            await bus.publish(
+                CHANNEL_SYSTEM,
+                BusMessage(
+                    type="pipeline_started",
+                    timestamp=datetime.now(timezone.utc),
+                    source="api",
+                    payload=PipelineProgressPayload(run_id=run_id),
+                ),
+            )
+
             # 1. Collect
             story_queue = bus.subscribe(CHANNEL_STORY)
             collector = CollectorAgent(bus=bus, db_conn=db, max_stories=max_stories)
@@ -468,6 +571,10 @@ async def run_pipeline(
             story_msgs: list[BusMessage] = []
             while not story_queue.empty():
                 story_msgs.append(story_queue.get_nowait())
+
+            progress.collected = len(story_msgs)
+            progress.total_stories = len(story_msgs)
+            await _emit_progress(bus, progress)
 
             # 2. Score + Categorize each story
             scorer = ScorerAgent(bus=bus, db_conn=db)
@@ -482,6 +589,10 @@ async def run_pipeline(
             while not score_queue.empty():
                 score_msgs.append(score_queue.get_nowait())
 
+            progress.scored = len(score_msgs)
+            progress.categorized = len(story_msgs)
+            await _emit_progress(bus, progress)
+
             # 3. Orchestrate
             orchestrator = OrchestratorAgent(bus=bus, db_conn=db)
             fetch_queue = bus.subscribe(CHANNEL_FETCH_REQUEST)
@@ -495,6 +606,8 @@ async def run_pipeline(
             while not fetch_queue.empty():
                 fetch_msgs.append(fetch_queue.get_nowait())
 
+            await _emit_progress(bus, progress)
+
             # 4. Fetch
             article_queue = bus.subscribe(CHANNEL_ARTICLE)
             fetcher = FetcherAgent(bus=bus, db_conn=db)
@@ -502,6 +615,8 @@ async def run_pipeline(
             try:
                 for msg in fetch_msgs:
                     await fetcher.process(CHANNEL_FETCH_REQUEST, msg)
+                    progress.fetched += 1
+                    await _emit_progress(bus, progress)
             finally:
                 await fetcher._session.close()
 
@@ -526,10 +641,14 @@ async def run_pipeline(
             try:
                 for msg in summarize_msgs:
                     await summarizer.process(CHANNEL_SUMMARIZE_REQUEST, msg)
+                    progress.summarized += 1
+                    await _emit_progress(bus, progress)
 
                 while not summary_queue.empty():
                     summary_msg = summary_queue.get_nowait()
                     await validator.process(CHANNEL_SUMMARY, summary_msg)
+                    progress.validated += 1
+                    await _emit_progress(bus, progress)
             finally:
                 await summarizer._llm.close()
                 await validator._llm.close()
@@ -541,18 +660,68 @@ async def run_pipeline(
             if digest and digest.get("story_count", 0) > 0:
                 await report_builder._persist_and_publish(digest)
 
+            # Publish pipeline_completed
+            await bus.publish(
+                CHANNEL_SYSTEM,
+                BusMessage(
+                    type="pipeline_completed",
+                    timestamp=datetime.now(timezone.utc),
+                    source="api",
+                    payload=PipelineProgressPayload(
+                        run_id=run_id,
+                        collected=progress.collected,
+                        scored=progress.scored,
+                        categorized=progress.categorized,
+                        fetched=progress.fetched,
+                        summarized=progress.summarized,
+                        validated=progress.validated,
+                        total_stories=progress.total_stories,
+                    ),
+                ),
+            )
+
         except Exception:
             logger.exception("pipeline run %s failed", run_id)
         finally:
-            request.app.state.active_runs.pop(run_id, None)
+            _remove_run(request, run_id)
 
     task = asyncio.create_task(_run())
-    request.app.state.active_runs[run_id] = task
+    _register_run(request, run_id, task, "pipeline", progress)
     return {"run_id": run_id, "status": "started"}
 
 
+@router.get("/runs")
+async def list_runs(request: Request) -> list[RunStatus]:
+    """List all active and recently completed runs.
+
+    Returns active runs tracked in ``app.state.active_runs`` with
+    their type, status, start time, and progress (if applicable).
+
+    Args:
+        request: The incoming FastAPI request (for app.state access).
+
+    Returns:
+        A list of RunStatus models for all tracked runs.
+    """
+    runs: dict[str, RunEntry] = getattr(request.app.state, "active_runs", {})
+    result: list[RunStatus] = []
+    for rid, entry in runs.items():
+        status = _task_status(entry.task)
+        result.append(
+            RunStatus(
+                run_id=rid,
+                type=entry.run_type,
+                status=status,
+                started_at=entry.started_at,
+                progress=entry.progress,
+            )
+        )
+    result.sort(key=lambda r: r.started_at, reverse=True)
+    return result
+
+
 @router.get("/runs/{run_id}")
-async def get_run_status(run_id: str, request: Request) -> dict[str, str]:
+async def get_run_status(run_id: str, request: Request) -> RunStatus:
     """Check the status of a background run.
 
     Looks up the run in ``app.state.active_runs`` and returns its
@@ -565,18 +734,21 @@ async def get_run_status(run_id: str, request: Request) -> dict[str, str]:
         request: The incoming FastAPI request (for app.state access).
 
     Returns:
-        A dict with ``run_id`` and ``status``, plus ``error`` on failure.
+        A RunStatus with run_id, type, status, and started_at.
     """
-    runs: dict[str, asyncio.Task[None]] = getattr(
-        request.app.state, "active_runs", {}
+    runs: dict[str, RunEntry] = getattr(request.app.state, "active_runs", {})
+    entry = runs.get(run_id)
+    if entry is None:
+        return RunStatus(
+            run_id=run_id,
+            type="unknown",
+            status="completed_or_unknown",
+            started_at="",
+        )
+    return RunStatus(
+        run_id=run_id,
+        type=entry.run_type,
+        status=_task_status(entry.task),
+        started_at=entry.started_at,
+        progress=entry.progress,
     )
-    task = runs.get(run_id)
-    if task is None:
-        return {"run_id": run_id, "status": "completed_or_unknown"}
-    if task.done():
-        runs.pop(run_id, None)
-        exc = task.exception()
-        if exc:
-            return {"run_id": run_id, "status": "failed", "error": str(exc)}
-        return {"run_id": run_id, "status": "completed"}
-    return {"run_id": run_id, "status": "running"}

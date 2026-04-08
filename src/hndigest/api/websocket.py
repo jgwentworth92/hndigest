@@ -22,10 +22,11 @@ from hndigest.bus import (
     CHANNEL_STORY,
     CHANNEL_SUMMARIZE_REQUEST,
     CHANNEL_SUMMARY,
+    CHANNEL_SYSTEM,
     CHANNEL_VALIDATED_SUMMARY,
     MessageBus,
 )
-from hndigest.models import BusMessage
+from hndigest.models import BusMessage, HeartbeatPayload, PipelineProgressPayload
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["websocket"])
@@ -119,10 +120,11 @@ async def websocket_events(websocket: WebSocket) -> None:
     else:
         bus = websocket.app.state.bus
 
-    # Subscribe to ALL data channels
+    # Subscribe to ALL data channels + system channel
     queues: dict[str, asyncio.Queue[BusMessage]] = {}
     for channel in CHANNEL_EVENT_MAP:
         queues[channel] = bus.subscribe(channel)
+    queues[CHANNEL_SYSTEM] = bus.subscribe(CHANNEL_SYSTEM)
 
     try:
         while True:
@@ -148,15 +150,64 @@ async def websocket_events(websocket: WebSocket) -> None:
                 channel = tasks[task]
                 try:
                     message: BusMessage = task.result()
-                    event_name = CHANNEL_EVENT_MAP.get(channel, channel)
-                    await manager.broadcast(
-                        {
-                            "event": event_name,
-                            "timestamp": message.timestamp.isoformat(),
-                            "source": message.source,
-                            "data": message.payload.model_dump(),
-                        }
-                    )
+
+                    if channel == CHANNEL_SYSTEM:
+                        # Translate system channel messages to frontend events
+                        if message.type == "heartbeat" and isinstance(
+                            message.payload, HeartbeatPayload
+                        ):
+                            await manager.broadcast(
+                                {
+                                    "event": "agent_heartbeat",
+                                    "timestamp": message.timestamp.isoformat(),
+                                    "data": {
+                                        "agent": message.payload.agent,
+                                        "status": message.payload.status,
+                                        "last_heartbeat": message.timestamp.isoformat(),
+                                        "messages_processed": message.payload.messages_processed,
+                                    },
+                                }
+                            )
+                        elif message.type in (
+                            "pipeline_started",
+                            "pipeline_progress",
+                            "pipeline_completed",
+                        ):
+                            payload = message.payload
+                            run_id = (
+                                payload.run_id
+                                if isinstance(payload, PipelineProgressPayload)
+                                else ""
+                            )
+                            await manager.broadcast(
+                                {
+                                    "event": message.type,
+                                    "run_id": run_id,
+                                    "timestamp": message.timestamp.isoformat(),
+                                    "source": message.source,
+                                    "data": payload.model_dump(),
+                                }
+                            )
+                        else:
+                            # Other system events (shutdown, etc.)
+                            await manager.broadcast(
+                                {
+                                    "event": f"system_{message.type}",
+                                    "timestamp": message.timestamp.isoformat(),
+                                    "source": message.source,
+                                    "data": message.payload.model_dump(),
+                                }
+                            )
+                    else:
+                        event_name = CHANNEL_EVENT_MAP.get(channel, channel)
+                        await manager.broadcast(
+                            {
+                                "event": event_name,
+                                "timestamp": message.timestamp.isoformat(),
+                                "source": message.source,
+                                "data": message.payload.model_dump(),
+                            }
+                        )
                 except Exception:
                     logger.exception("Error broadcasting WebSocket event")
 

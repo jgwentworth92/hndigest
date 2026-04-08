@@ -191,3 +191,43 @@ class DigestGenerateResponse(BaseModel):
     content_md: str
     period_start: str
     period_end: str
+
+
+class PipelineProgress(BaseModel):
+    """Aggregate pipeline progress counters.
+
+    Attributes:
+        collected: Stories collected so far.
+        scored: Stories scored so far.
+        categorized: Stories categorized so far.
+        fetched: Articles fetched so far.
+        summarized: Summaries generated so far.
+        validated: Summaries validated so far.
+        total_stories: Total stories in this pipeline run.
+    """
+
+    collected: int = 0
+    scored: int = 0
+    categorized: int = 0
+    fetched: int = 0
+    summarized: int = 0
+    validated: int = 0
+    total_stories: int = 0
+
+
+class RunStatus(BaseModel):
+    """Status of a background action run.
+
+    Attributes:
+        run_id: Unique run identifier.
+        type: Action type that spawned this run (e.g. pipeline, collect).
+        status: Current status: running, completed, or failed.
+        started_at: ISO 8601 UTC timestamp when the run began.
+        progress: Pipeline progress counters, if applicable.
+    """
+
+    run_id: str
+    type: str
+    status: str
+    started_at: str
+    progress: PipelineProgress | None = None

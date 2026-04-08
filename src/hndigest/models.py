@@ -281,6 +281,35 @@ class DigestPayload(BaseModel):
     content_md: str
 
 
+# ── Pipeline progress (API → WebSocket broadcast) ───────────────────
+
+
+class PipelineProgressPayload(BaseModel):
+    """Payload for pipeline progress events broadcast via WebSocket.
+
+    Attributes:
+        run_id: Unique run identifier for this pipeline execution.
+        collected: Stories collected so far.
+        scored: Stories scored so far.
+        categorized: Stories categorized so far.
+        fetched: Articles fetched so far.
+        summarized: Summaries generated so far.
+        validated: Summaries validated so far.
+        total_stories: Total stories in this pipeline run.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    run_id: str = ""
+    collected: int = 0
+    scored: int = 0
+    categorized: int = 0
+    fetched: int = 0
+    summarized: int = 0
+    validated: int = 0
+    total_stories: int = 0
+
+
 # ── Union of all payload types ───────────────────────────────────────
 
 PayloadType = (
@@ -295,6 +324,7 @@ PayloadType = (
     | OrchestratorDecisionPayload
     | HeartbeatPayload
     | DigestPayload
+    | PipelineProgressPayload
 )
 
 
