@@ -10,6 +10,8 @@ import type {
   CategoryCount,
   SystemConfig,
 } from "@/lib/types";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Separator } from "@/components/ui/separator";
 import { AgentCard } from "./AgentCard";
 import { CategoryTable } from "./CategoryTable";
 
@@ -76,49 +78,59 @@ export function SystemView() {
       {/* Health + Categories grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {/* Health card */}
-        <div className="border border-gray-200 rounded-lg p-4 bg-white">
-          <h2 className="text-lg font-semibold mb-3">Health</h2>
-          {healthLoading && (
-            <p className="text-gray-500 text-sm">Loading...</p>
-          )}
-          {healthErr && (
-            <p className="text-red-600 text-sm">Error: {healthErr}</p>
-          )}
-          {health && (
-            <div className="text-sm space-y-1 text-gray-700">
-              <div>
-                Status:{" "}
-                <span
-                  className={
-                    health.status === "ok"
-                      ? "text-green-600 font-medium"
-                      : "text-red-600 font-medium"
-                  }
-                >
-                  {health.status}
-                </span>
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-lg">Health</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {healthLoading && (
+              <p className="text-muted-foreground text-sm">Loading...</p>
+            )}
+            {healthErr && (
+              <p className="text-destructive text-sm">Error: {healthErr}</p>
+            )}
+            {health && (
+              <div className="text-sm space-y-1 text-muted-foreground">
+                <div>
+                  Status:{" "}
+                  <span
+                    className={
+                      health.status === "ok"
+                        ? "text-green-600 font-medium"
+                        : "text-destructive font-medium"
+                    }
+                  >
+                    {health.status}
+                  </span>
+                </div>
+                <div>
+                  Uptime: {Math.round(health.uptime_seconds / 60)} minutes
+                </div>
+                {health.mode && <div>Mode: {health.mode}</div>}
+                {health.database && <div>Database: {health.database}</div>}
               </div>
-              <div>
-                Uptime: {Math.round(health.uptime_seconds / 60)} minutes
-              </div>
-              {health.mode && <div>Mode: {health.mode}</div>}
-              {health.database && <div>Database: {health.database}</div>}
-            </div>
-          )}
-        </div>
+            )}
+          </CardContent>
+        </Card>
 
         {/* Category table */}
-        <div className="border border-gray-200 rounded-lg p-4 bg-white">
-          <h2 className="text-lg font-semibold mb-3">Categories</h2>
-          {categories && categories.length > 0 ? (
-            <CategoryTable categories={categories} />
-          ) : (
-            <p className="text-gray-400 text-sm italic">
-              No category data yet.
-            </p>
-          )}
-        </div>
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-lg">Categories</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {categories && categories.length > 0 ? (
+              <CategoryTable categories={categories} />
+            ) : (
+              <p className="text-muted-foreground text-sm italic">
+                No category data yet.
+              </p>
+            )}
+          </CardContent>
+        </Card>
       </div>
+
+      <Separator />
 
       {/* Agent cards */}
       <div>
@@ -136,23 +148,29 @@ export function SystemView() {
             ))}
           </div>
         ) : (
-          <p className="text-gray-400 text-sm italic">
+          <p className="text-muted-foreground text-sm italic">
             No heartbeats yet.
           </p>
         )}
       </div>
 
+      <Separator />
+
       {/* Config */}
-      <div>
-        <h2 className="text-lg font-semibold mb-3">Configuration</h2>
-        {config ? (
-          <pre className="bg-gray-50 border border-gray-200 rounded-lg p-4 text-xs overflow-x-auto">
-            {JSON.stringify(config, null, 2)}
-          </pre>
-        ) : (
-          <p className="text-gray-400 text-sm italic">Loading config...</p>
-        )}
-      </div>
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-lg">Configuration</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {config ? (
+            <pre className="bg-muted rounded-lg p-4 text-xs overflow-x-auto">
+              {JSON.stringify(config, null, 2)}
+            </pre>
+          ) : (
+            <p className="text-muted-foreground text-sm italic">Loading config...</p>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }

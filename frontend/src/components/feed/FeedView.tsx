@@ -6,6 +6,8 @@ import { useWebSocket } from "@/hooks/useWebSocket";
 import { STORY_EVENTS, PIPELINE_EVENTS } from "@/lib/events";
 import type { WsEvent } from "@/lib/events";
 import type { PipelineProgress } from "@/lib/types";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Separator } from "@/components/ui/separator";
 import { ActionPanel } from "./ActionPanel";
 import { ProgressBar } from "./ProgressBar";
 import { EventLog } from "./EventLog";
@@ -89,20 +91,32 @@ export function FeedView() {
     <div className="space-y-6">
       <h1 className="text-2xl font-bold">Live Feed</h1>
 
-      <ActionPanel onRunStarted={handleRunStarted} />
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-lg">Actions</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <ActionPanel onRunStarted={handleRunStarted} />
+        </CardContent>
+      </Card>
 
-      <div>
-        <h2 className="text-lg font-semibold mb-2">Pipeline Progress</h2>
-        <ProgressBar
-          progress={activeRun?.progress ?? null}
-          status={activeRun?.status ?? "idle"}
-        />
-      </div>
+      <Separator />
 
-      <div>
-        <h2 className="text-lg font-semibold mb-2">Event Log</h2>
-        <EventLog events={events} />
-      </div>
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-lg">Pipeline Progress</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <ProgressBar
+            progress={activeRun?.progress ?? null}
+            status={activeRun?.status ?? "idle"}
+          />
+        </CardContent>
+      </Card>
+
+      <Separator />
+
+      <EventLog events={events} />
     </div>
   );
 }

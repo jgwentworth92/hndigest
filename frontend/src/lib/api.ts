@@ -20,6 +20,15 @@ async function get<T>(path: string): Promise<T> {
   return res.json();
 }
 
+async function getOrNull<T>(path: string): Promise<T | null> {
+  const res = await fetch(`${API_URL}${path}`);
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    throw new Error(`API ${res.status}: ${path}`);
+  }
+  return res.json();
+}
+
 async function post<T>(path: string): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, { method: "POST" });
   if (!res.ok) {
@@ -32,8 +41,8 @@ export const api = {
   // Digests
   getDigests: (limit = 20) =>
     get<DigestSummary[]>(`/api/digests?limit=${limit}`),
-  getLatestDigest: () => get<DigestDetail>("/api/digests/latest"),
-  getDigest: (id: number) => get<DigestDetail>(`/api/digests/${id}`),
+  getLatestDigest: () => getOrNull<DigestDetail>("/api/digests/latest"),
+  getDigest: (id: number) => getOrNull<DigestDetail>(`/api/digests/${id}`),
 
   // Stories
   getStories: (params?: {
