@@ -2,20 +2,22 @@
 
 import { useState } from "react";
 import { api } from "@/lib/api";
+import { Button } from "@/components/ui/button";
 
 interface ActionPanelProps {
   onRunStarted: (runId: string, type: string) => void;
 }
 
 const ACTIONS = [
-  { label: "Run Pipeline", action: () => api.runPipeline(), type: "pipeline" },
-  { label: "Collect", action: () => api.collect(), type: "collect" },
-  { label: "Score", action: () => api.score(), type: "score" },
-  { label: "Categorize", action: () => api.categorize(), type: "categorize" },
+  { label: "Run Pipeline", action: () => api.runPipeline(), type: "pipeline", primary: true },
+  { label: "Collect", action: () => api.collect(), type: "collect", primary: false },
+  { label: "Score", action: () => api.score(), type: "score", primary: false },
+  { label: "Categorize", action: () => api.categorize(), type: "categorize", primary: false },
   {
     label: "Generate Digest",
     action: () => api.generateDigest(),
     type: "digest",
+    primary: false,
   },
 ] as const;
 
@@ -39,15 +41,16 @@ export function ActionPanel({ onRunStarted }: ActionPanelProps) {
 
   return (
     <div className="flex flex-wrap gap-2">
-      {ACTIONS.map(({ label, action, type }) => (
-        <button
+      {ACTIONS.map(({ label, action, type, primary }) => (
+        <Button
           key={type}
+          variant={primary ? "default" : "outline"}
+          size="sm"
           disabled={busy}
           onClick={() => handleAction(action, type)}
-          className="px-4 py-2 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {label}
-        </button>
+        </Button>
       ))}
     </div>
   );

@@ -1,6 +1,7 @@
 "use client";
 
 import type { PipelineProgress } from "@/lib/types";
+import { Progress } from "@/components/ui/progress";
 
 interface ProgressBarProps {
   progress: PipelineProgress | null;
@@ -10,7 +11,7 @@ interface ProgressBarProps {
 export function ProgressBar({ progress, status }: ProgressBarProps) {
   if (!progress || progress.total_stories === 0) {
     return (
-      <div className="text-sm text-gray-500">
+      <div className="text-sm text-muted-foreground">
         {status === "idle"
           ? "No active pipeline run."
           : `Status: ${status}`}
@@ -35,17 +36,12 @@ export function ProgressBar({ progress, status }: ProgressBarProps) {
   return (
     <div>
       <div className="flex items-center gap-3 mb-2">
-        <div className="flex-1 bg-gray-200 rounded-full h-4 overflow-hidden">
-          <div
-            className="bg-blue-600 h-4 rounded-full transition-all duration-300"
-            style={{ width: `${pct}%` }}
-          />
-        </div>
-        <span className="text-sm font-medium text-gray-700 w-12 text-right">
+        <Progress value={pct} className="flex-1 h-4" />
+        <span className="text-sm font-medium text-muted-foreground w-12 text-right">
           {pct}%
         </span>
       </div>
-      <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-500">
+      <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
         {stages.map((s) => (
           <span key={s.label}>
             {s.label}: {s.value}/{total}

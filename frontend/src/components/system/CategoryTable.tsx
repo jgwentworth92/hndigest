@@ -1,4 +1,12 @@
 import type { CategoryCount } from "@/lib/types";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 
 interface CategoryTableProps {
   categories: CategoryCount[];
@@ -8,36 +16,34 @@ export function CategoryTable({ categories }: CategoryTableProps) {
   const total = categories.reduce((sum, c) => sum + c.count, 0);
 
   return (
-    <table className="w-full text-sm">
-      <thead>
-        <tr className="border-b border-gray-200 text-left text-gray-500">
-          <th className="py-2 font-medium">Category</th>
-          <th className="py-2 font-medium text-right">Count</th>
-          <th className="py-2 font-medium text-right">%</th>
-        </tr>
-      </thead>
-      <tbody>
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Category</TableHead>
+          <TableHead className="text-right">Count</TableHead>
+          <TableHead className="text-right">%</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
         {categories.map((cat) => (
-          <tr key={cat.category} className="border-b border-gray-100">
-            <td className="py-2 capitalize">
+          <TableRow key={cat.category}>
+            <TableCell className="capitalize">
               {cat.category.replace(/_/g, " ")}
-            </td>
-            <td className="py-2 text-right">{cat.count}</td>
-            <td className="py-2 text-right">
+            </TableCell>
+            <TableCell className="text-right">{cat.count}</TableCell>
+            <TableCell className="text-right">
               {total > 0 ? ((cat.count / total) * 100).toFixed(1) : "0.0"}%
-            </td>
-          </tr>
+            </TableCell>
+          </TableRow>
         ))}
-      </tbody>
-      {total > 0 && (
-        <tfoot>
-          <tr className="font-medium">
-            <td className="py-2">Total</td>
-            <td className="py-2 text-right">{total}</td>
-            <td className="py-2 text-right">100.0%</td>
-          </tr>
-        </tfoot>
-      )}
-    </table>
+        {total > 0 && (
+          <TableRow className="font-medium">
+            <TableCell>Total</TableCell>
+            <TableCell className="text-right">{total}</TableCell>
+            <TableCell className="text-right">100.0%</TableCell>
+          </TableRow>
+        )}
+      </TableBody>
+    </Table>
   );
 }

@@ -4,6 +4,13 @@ import { useApi } from "@/hooks/useApi";
 import { api } from "@/lib/api";
 import type { DigestSummary } from "@/lib/types";
 import { useCallback } from "react";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 export function DigestPicker({
   currentId,
@@ -19,22 +26,23 @@ export function DigestPicker({
 
   return (
     <div className="flex items-center gap-2 text-sm">
-      <label htmlFor="digest-picker" className="text-gray-600">
-        Digest:
-      </label>
-      <select
-        id="digest-picker"
-        value={currentId ?? ""}
-        onChange={(e) => onSelect(Number(e.target.value))}
-        className="border border-gray-300 rounded px-2 py-1 text-sm bg-white"
+      <span className="text-muted-foreground">Digest:</span>
+      <Select
+        value={currentId ?? undefined}
+        onValueChange={(val) => onSelect(Number(val))}
       >
-        {digests.map((d) => (
-          <option key={d.id} value={d.id}>
-            {new Date(d.created_at).toLocaleDateString()} ({d.story_count}{" "}
-            stories)
-          </option>
-        ))}
-      </select>
+        <SelectTrigger size="sm">
+          <SelectValue placeholder="Select digest" />
+        </SelectTrigger>
+        <SelectContent>
+          {digests.map((d) => (
+            <SelectItem key={d.id} value={d.id}>
+              {new Date(d.created_at).toLocaleDateString()} ({d.story_count}{" "}
+              stories)
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
     </div>
   );
 }
