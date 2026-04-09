@@ -396,3 +396,74 @@ These items are added to ADR-006's implementation plan:
 - [ ] Test: WebSocket reconnect → REST refetch recovers current state
 - [ ] Test: `GET /api/runs` returns active runs during pipeline execution
 - [ ] Test: `pipeline_progress` events emitted during `/api/pipeline/run`
+
+---
+
+## Amendment 3: Failure handling and frontend configurability
+
+### Problem
+
+Pipeline failures are invisible to the frontend. When an action endpoint's background task raises an exception:
+
+1. The exception is logged server-side but no event is published to WebSocket
+2. The run entry is immediately removed from `active_runs`
+3. `GET /api/runs/{run_id}` returns `completed_or_unknown` — indistinguishable from success
+4. The frontend progress bar freezes at its last known state with no error indication
+
+Additionally, the frontend hardcodes `max_stories=10` for all pipeline and collect actions. The API accepts this parameter but the UI provides no control.
+
+### Decisions
+
+#### Failure events
+
+When a background task fails, publish a `pipeline_failed` event to the system channel before removing the run:
+
+```json
+{
+  "event": "pipeline_failed",
+  "run_id": "abc123",
+  "timestamp": "2026-04-09T12:00:00+00:00",
+  "data": {
+    "run_id": "abc123",
+    "error": "Connection timeout fetching article",
+    "stage": "fetch",
+    "progress": { "collected": 10, "scored": 10, "fetched": 3, ... }
+  }
+}
+```
+
+This applies to ALL action endpoints, not just `/api/pipeline/run`. Each action's `_run()` catch block publishes the failure event.
+
+#### Run retention with TTL
+
+Failed and completed runs are kept in `active_runs` for 5 minutes instead of being immediately removed. This allows the frontend to query run status after the fact. A periodic cleanup task removes entries older than the TTL.
+
+The `RunEntry` dataclass gains two fields:
+
+- `ended_at: str | None` — set when the task completes or fails
+- `error: str | None` — set on failure with the exception message
+
+`RunStatus` response model gains a matching `error: str | None` field.
+
+#### Frontend error handling
+
+- `ActionPanel`: show error toast/banner when an API call fails (not silently swallowed)
+- `FeedView`: subscribe to `pipeline_failed` event, update active run to error state
+- `ProgressBar`: render error state (red bar, error message) when run status is "failed"
+- `ActionPanel`: add number input for `max_stories` (default 10, range 1-100)
+
+### Implementation plan
+
+- [ ] Backend: add `pipeline_failed` to `PipelineProgressPayload` or create a new payload type with error field
+- [ ] Backend: publish `pipeline_failed` event in all action endpoint catch blocks
+- [ ] Backend: add `ended_at` and `error` fields to `RunEntry`, retain runs for 5 min TTL
+- [ ] Backend: add `error` field to `RunStatus` schema
+- [ ] Backend: add periodic cleanup of expired runs in lifespan or lazy cleanup on GET
+- [ ] Frontend: add `pipeline_failed` to event types
+- [ ] Frontend: handle `pipeline_failed` in FeedView, show error state on ProgressBar
+- [ ] Frontend: show error feedback in ActionPanel when API calls fail
+- [ ] Frontend: add max_stories input to ActionPanel
+- [ ] WebSocket: route `pipeline_failed` events same as other pipeline events (with top-level run_id)
+- [ ] Test: pipeline failure publishes `pipeline_failed` event
+- [ ] Test: failed run retained in GET /api/runs with error field
+- [ ] Test: frontend shows error state on pipeline failure
