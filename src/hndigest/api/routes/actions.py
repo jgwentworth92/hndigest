@@ -63,6 +63,8 @@ class RunEntry:
     run_type: str
     started_at: str
     progress: PipelineProgress | None = None
+    ended_at: str | None = None
+    error: str | None = None
 
 
 def _new_run_id() -> str:
@@ -98,14 +100,79 @@ def _register_run(
     )
 
 
-def _remove_run(request: Request, run_id: str) -> None:
-    """Remove a completed run from app.state.active_runs.
+_RUN_TTL_SECONDS = 300  # 5 minutes
+
+
+def _finish_run(
+    request: Request, run_id: str, error: str | None = None
+) -> None:
+    """Mark a run as finished, retaining it for TTL-based cleanup.
 
     Args:
         request: The incoming FastAPI request.
-        run_id: The run to remove.
+        run_id: The run to mark finished.
+        error: Error message if the run failed, None for success.
     """
-    request.app.state.active_runs.pop(run_id, None)
+    entry = request.app.state.active_runs.get(run_id)
+    if entry:
+        entry.ended_at = datetime.now(timezone.utc).isoformat()
+        entry.error = error
+
+
+def _cleanup_expired_runs(request: Request) -> None:
+    """Remove finished runs older than the TTL from active_runs.
+
+    Args:
+        request: The incoming FastAPI request.
+    """
+    runs: dict[str, RunEntry] = getattr(request.app.state, "active_runs", {})
+    now = datetime.now(timezone.utc)
+    expired = [
+        rid
+        for rid, entry in runs.items()
+        if entry.ended_at
+        and (now - datetime.fromisoformat(entry.ended_at)).total_seconds()
+        > _RUN_TTL_SECONDS
+    ]
+    for rid in expired:
+        runs.pop(rid, None)
+
+
+async def _publish_failure(
+    bus: MessageBus,
+    run_id: str,
+    error: str,
+    progress: PipelineProgress | None = None,
+) -> None:
+    """Publish a pipeline_failed event to the system channel.
+
+    Args:
+        bus: The message bus.
+        run_id: Run identifier.
+        error: Error description.
+        progress: Last known pipeline progress, if available.
+    """
+    try:
+        await bus.publish(
+            CHANNEL_SYSTEM,
+            BusMessage(
+                type="pipeline_failed",
+                timestamp=datetime.now(timezone.utc),
+                source="api",
+                payload=PipelineProgressPayload(
+                    run_id=run_id,
+                    collected=progress.collected if progress else 0,
+                    scored=progress.scored if progress else 0,
+                    categorized=progress.categorized if progress else 0,
+                    fetched=progress.fetched if progress else 0,
+                    summarized=progress.summarized if progress else 0,
+                    validated=progress.validated if progress else 0,
+                    total_stories=progress.total_stories if progress else 0,
+                ),
+            ),
+        )
+    except Exception:
+        logger.exception("Failed to publish pipeline_failed event for run %s", run_id)
 
 
 def _task_status(task: asyncio.Task[None]) -> str:
@@ -162,10 +229,12 @@ async def collect(
                 await collector._poll_once()
             finally:
                 await collector._session.close()
-        except Exception:
+        except Exception as exc:
             logger.exception("collect run %s failed", run_id)
-        finally:
-            _remove_run(request, run_id)
+            await _publish_failure(bus, run_id, str(exc))
+            _finish_run(request, run_id, error=str(exc))
+            return
+        _finish_run(request, run_id)
 
     task = asyncio.create_task(_run())
     _register_run(request, run_id, task, "collect")
@@ -222,10 +291,12 @@ async def score(
                     ),
                 )
                 await scorer.process(CHANNEL_STORY, story_msg)
-        except Exception:
+        except Exception as exc:
             logger.exception("score run %s failed", run_id)
-        finally:
-            _remove_run(request, run_id)
+            await _publish_failure(bus, run_id, str(exc))
+            _finish_run(request, run_id, error=str(exc))
+            return
+        _finish_run(request, run_id)
 
     task = asyncio.create_task(_run())
     _register_run(request, run_id, task, "score")
@@ -276,10 +347,12 @@ async def categorize(
                     ),
                 )
                 await categorizer.process(CHANNEL_STORY, story_msg)
-        except Exception:
+        except Exception as exc:
             logger.exception("categorize run %s failed", run_id)
-        finally:
-            _remove_run(request, run_id)
+            await _publish_failure(bus, run_id, str(exc))
+            _finish_run(request, run_id, error=str(exc))
+            return
+        _finish_run(request, run_id)
 
     task = asyncio.create_task(_run())
     _register_run(request, run_id, task, "categorize")
@@ -355,10 +428,12 @@ async def orchestrate(
                     ),
                 )
                 await orchestrator.process(CHANNEL_SCORE, score_msg)
-        except Exception:
+        except Exception as exc:
             logger.exception("orchestrate run %s failed", run_id)
-        finally:
-            _remove_run(request, run_id)
+            await _publish_failure(bus, run_id, str(exc))
+            _finish_run(request, run_id, error=str(exc))
+            return
+        _finish_run(request, run_id)
 
     task = asyncio.create_task(_run())
     _register_run(request, run_id, task, "orchestrate")
@@ -419,10 +494,12 @@ async def fetch_story(
                 await fetcher.process(CHANNEL_FETCH_REQUEST, fetch_msg)
             finally:
                 await fetcher._session.close()
-        except Exception:
+        except Exception as exc:
             logger.exception("fetch run %s for story %d failed", run_id, story_id)
-        finally:
-            _remove_run(request, run_id)
+            await _publish_failure(bus, run_id, str(exc))
+            _finish_run(request, run_id, error=str(exc))
+            return
+        _finish_run(request, run_id)
 
     task = asyncio.create_task(_run())
     _register_run(request, run_id, task, "fetch")
@@ -490,10 +567,12 @@ async def summarize_story(
                     await validator.process(CHANNEL_SUMMARY, summary_msg)
                 finally:
                     await validator._llm.close()
-        except Exception:
+        except Exception as exc:
             logger.exception("summarize run %s for story %d failed", run_id, story_id)
-        finally:
-            _remove_run(request, run_id)
+            await _publish_failure(bus, run_id, str(exc))
+            _finish_run(request, run_id, error=str(exc))
+            return
+        _finish_run(request, run_id)
 
     task = asyncio.create_task(_run())
     _register_run(request, run_id, task, "summarize")
@@ -680,10 +759,12 @@ async def run_pipeline(
                 ),
             )
 
-        except Exception:
+        except Exception as exc:
             logger.exception("pipeline run %s failed", run_id)
-        finally:
-            _remove_run(request, run_id)
+            await _publish_failure(bus, run_id, str(exc), progress)
+            _finish_run(request, run_id, error=str(exc))
+            return
+        _finish_run(request, run_id)
 
     task = asyncio.create_task(_run())
     _register_run(request, run_id, task, "pipeline", progress)
@@ -703,10 +784,11 @@ async def list_runs(request: Request) -> list[RunStatus]:
     Returns:
         A list of RunStatus models for all tracked runs.
     """
+    _cleanup_expired_runs(request)
     runs: dict[str, RunEntry] = getattr(request.app.state, "active_runs", {})
     result: list[RunStatus] = []
     for rid, entry in runs.items():
-        status = _task_status(entry.task)
+        status = "failed" if entry.error else _task_status(entry.task)
         result.append(
             RunStatus(
                 run_id=rid,
@@ -714,6 +796,7 @@ async def list_runs(request: Request) -> list[RunStatus]:
                 status=status,
                 started_at=entry.started_at,
                 progress=entry.progress,
+                error=entry.error,
             )
         )
     result.sort(key=lambda r: r.started_at, reverse=True)
@@ -736,6 +819,7 @@ async def get_run_status(run_id: str, request: Request) -> RunStatus:
     Returns:
         A RunStatus with run_id, type, status, and started_at.
     """
+    _cleanup_expired_runs(request)
     runs: dict[str, RunEntry] = getattr(request.app.state, "active_runs", {})
     entry = runs.get(run_id)
     if entry is None:
@@ -745,10 +829,12 @@ async def get_run_status(run_id: str, request: Request) -> RunStatus:
             status="completed_or_unknown",
             started_at="",
         )
+    status = "failed" if entry.error else _task_status(entry.task)
     return RunStatus(
         run_id=run_id,
         type=entry.run_type,
-        status=_task_status(entry.task),
+        status=status,
         started_at=entry.started_at,
         progress=entry.progress,
+        error=entry.error,
     )

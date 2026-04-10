@@ -172,6 +172,7 @@ async def websocket_events(websocket: WebSocket) -> None:
                             "pipeline_started",
                             "pipeline_progress",
                             "pipeline_completed",
+                            "pipeline_failed",
                         ):
                             payload = message.payload
                             run_id = (

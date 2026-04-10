@@ -101,6 +101,7 @@ export interface RunStatus {
   status: string;
   started_at: string;
   progress: PipelineProgress | null;
+  error: string | null;
 }
 
 // --- Action response (202) ---

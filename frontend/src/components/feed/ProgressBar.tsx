@@ -2,13 +2,26 @@
 
 import type { PipelineProgress } from "@/lib/types";
 import { Progress } from "@/components/ui/progress";
+import { Badge } from "@/components/ui/badge";
 
 interface ProgressBarProps {
   progress: PipelineProgress | null;
   status: string;
+  error?: string | null;
 }
 
-export function ProgressBar({ progress, status }: ProgressBarProps) {
+export function ProgressBar({ progress, status, error }: ProgressBarProps) {
+  if (status === "failed" && error) {
+    return (
+      <div>
+        <Progress value={100} className="flex-1 h-4 [&>div]:bg-destructive" />
+        <Badge variant="destructive" className="mt-2">
+          Pipeline failed: {error}
+        </Badge>
+      </div>
+    );
+  }
+
   if (!progress || progress.total_stories === 0) {
     return (
       <div className="text-sm text-muted-foreground">

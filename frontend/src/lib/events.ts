@@ -15,6 +15,7 @@ export type EventType =
   | "pipeline_started"
   | "pipeline_progress"
   | "pipeline_completed"
+  | "pipeline_failed"
   // System events
   | "agent_heartbeat"
   // Keepalive
@@ -45,4 +46,5 @@ export const PIPELINE_EVENTS: EventType[] = [
   "pipeline_started",
   "pipeline_progress",
   "pipeline_completed",
+  "pipeline_failed",
 ];
