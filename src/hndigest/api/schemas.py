@@ -231,3 +231,4 @@ class RunStatus(BaseModel):
     status: str
     started_at: str
     progress: PipelineProgress | None = None
+    error: str | None = None

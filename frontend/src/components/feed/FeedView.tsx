@@ -17,6 +17,7 @@ interface ActiveRun {
   type: string;
   status: string;
   progress: PipelineProgress | null;
+  error: string | null;
 }
 
 export function FeedView() {
@@ -41,6 +42,7 @@ export function FeedView() {
             type: running.type,
             status: running.status,
             progress: running.progress,
+            error: running.error ?? null,
           });
         }
       })
@@ -61,6 +63,7 @@ export function FeedView() {
           type: (ev.data?.type as string) ?? "pipeline",
           status: "running",
           progress: null,
+          error: null,
         });
       } else if (ev.event === "pipeline_progress") {
         setActiveRun((prev) =>
@@ -71,6 +74,16 @@ export function FeedView() {
       } else if (ev.event === "pipeline_completed") {
         setActiveRun((prev) =>
           prev ? { ...prev, status: "completed" } : prev,
+        );
+      } else if (ev.event === "pipeline_failed") {
+        setActiveRun((prev) =>
+          prev
+            ? {
+                ...prev,
+                status: "failed",
+                error: (ev.data?.error as string) ?? "Unknown error",
+              }
+            : prev,
         );
       }
     });
@@ -84,7 +97,7 @@ export function FeedView() {
   }, [subscribe]);
 
   const handleRunStarted = useCallback((runId: string, type: string) => {
-    setActiveRun({ runId, type, status: "started", progress: null });
+    setActiveRun({ runId, type, status: "started", progress: null, error: null });
   }, []);
 
   return (
@@ -110,6 +123,7 @@ export function FeedView() {
           <ProgressBar
             progress={activeRun?.progress ?? null}
             status={activeRun?.status ?? "idle"}
+            error={activeRun?.error}
           />
         </CardContent>
       </Card>
