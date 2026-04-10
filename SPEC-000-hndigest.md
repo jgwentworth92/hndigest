@@ -570,20 +570,30 @@ Entry point: `python -m hndigest`
 
 ### FastAPI Server
 
-Runs in the same process and asyncio event loop as the agents. The supervisor starts inside FastAPI's lifespan context — when the server starts, agents start; when it stops, agents shut down gracefully. No external job queue (Redis/Celery) is needed because agents are asyncio tasks in the same event loop.
+Two operating modes:
 
-The WebSocket handler subscribes to the message bus and broadcasts events to all connected clients. The REST endpoints query SQLite directly.
+**Server mode** (`--mode server`, default): Passive backend. The lifespan initializes the database and message bus but does not start a supervisor or persistent agents. Agents are instantiated on-demand when action endpoints are called, run as background asyncio tasks, and are cleaned up after completion. This keeps the server lightweight and avoids resource consumption when no pipeline work is requested.
+
+**CLI mode** (`--mode cli`): The supervisor starts all agents as persistent asyncio tasks with health monitoring, heartbeats, and automatic restart. No HTTP server. Used for headless/cron operation.
+
+In both modes, the WebSocket handler subscribes to the message bus and broadcasts events to all connected clients. REST endpoints query SQLite directly.
 
 ```
+Server mode (passive):
 Python Process (single asyncio event loop)
 ├── FastAPI (uvicorn)
 │   ├── REST endpoints → read SQLite
+│   ├── Action endpoints → spawn agent tasks on demand
 │   └── WebSocket /api/events → subscribed to message bus
+└── Message bus (channels created at startup, agents publish during action runs)
+
+CLI mode (persistent agents):
+Python Process (single asyncio event loop)
 └── Supervisor
-    ├── Collector → story channel
+    ├── Collector → story channel (polls every 10 min)
     ├── Scorer, Categorizer, Orchestrator
     ├── Fetcher, Summarizer, Validator
-    └── Report Builder → digest channel → WebSocket broadcast
+    └── Report Builder → digest channel
 ```
 
 **Read endpoints** (synchronous, return data from SQLite):
@@ -652,41 +662,41 @@ Single-page application served by FastAPI. Connects to WebSocket for live update
 - [x] End-to-end test: story -> fetch -> categorize -> score -> digest without summaries
 
 ### Phase 3: Orchestrator
-- [ ] Orchestrator agent with priority thresholds and token budget
-- [ ] New message bus channels: fetch_request, summarize_request
-- [ ] orchestrator_decisions table migration
-- [ ] Rewire story channel: orchestrator receives stories, dispatches to fetcher
-- [ ] Config: orchestrator.yaml with thresholds, budget, LLM mode flag
-- [ ] Decision logging and budget tracking
-- [ ] End-to-end test: collector -> orchestrator -> fetcher with priority filtering
+- [x] Orchestrator agent with priority thresholds and token budget
+- [x] New message bus channels: fetch_request, summarize_request
+- [x] orchestrator_decisions table migration
+- [x] Rewire story channel: orchestrator receives stories, dispatches to fetcher
+- [x] Config: orchestrator.yaml with thresholds, budget, LLM mode flag
+- [x] Decision logging and budget tracking
+- [x] End-to-end test: collector -> orchestrator -> fetcher with priority filtering
 
 ### Phase 4: LLM Integration
-- [ ] Summarizer agent receives summarize_request from orchestrator
-- [ ] Validator agent with retry logic (ADR-003)
-- [ ] Summary and validation integrated into digest output
+- [x] Summarizer agent receives summarize_request from orchestrator
+- [x] Validator agent with retry logic (ADR-003)
+- [x] Summary and validation integrated into digest output
 - [ ] Orchestrator optional LLM mode for ambiguous prioritization
-- [ ] End-to-end test: full pipeline with validated summaries in digest
+- [x] End-to-end test: full pipeline with validated summaries in digest
 
 ### Phase 5: FastAPI Backend + Docker
-- [ ] FastAPI app with lifespan managing supervisor startup/shutdown
-- [ ] Two startup modes: `--mode server` (default, agents + API) and `--mode cli` (agents only)
-- [ ] REST endpoints: /api/health, /api/digests, /api/stories, /api/categories, /api/agents, /api/config
-- [ ] Action endpoints (202 async): /api/collect, /api/score, /api/categorize, /api/orchestrate, /api/fetch/{id}, /api/summarize/{id}, /api/pipeline/run, /api/digests/generate
-- [ ] Run tracking: GET /api/runs, GET /api/runs/{run_id}
-- [ ] WebSocket /api/events: all data channels + system channel (agent heartbeats)
-- [ ] Pipeline progress events during long-running actions
-- [ ] CORS enabled for Next.js dev server
-- [ ] Dockerfile + docker-compose.yaml with volume mounts for DB and config
-- [ ] End-to-end API tests
+- [x] FastAPI app with passive lifespan (on-demand agents, no persistent supervisor in server mode)
+- [x] Two startup modes: `--mode server` (default, passive API) and `--mode cli` (agents + supervisor)
+- [x] REST endpoints: /api/health, /api/digests, /api/stories, /api/categories, /api/agents, /api/config
+- [x] Action endpoints (202 async): /api/collect, /api/score, /api/categorize, /api/orchestrate, /api/fetch/{id}, /api/summarize/{id}, /api/pipeline/run, /api/digests/generate
+- [x] Run tracking: GET /api/runs, GET /api/runs/{run_id}
+- [x] WebSocket /api/events: all data channels + system channel (agent heartbeats)
+- [x] Pipeline progress events during long-running actions
+- [x] CORS enabled for Next.js dev server
+- [x] Dockerfile + docker-compose.yaml with volume mounts for DB and config
+- [x] End-to-end API tests
 
 ### Phase 6: Web Dashboard
-- [ ] Next.js dashboard consuming FastAPI REST + WebSocket
-- [ ] Daily Digest view: latest digest grouped by category, historical browsing
-- [ ] Story Detail view: full pipeline data chain for a single story
-- [ ] Live Feed view: real-time pipeline activity, action triggers, progress tracking
-- [ ] System view: agent status, category breakdown, configuration
-- [ ] WebSocket reconnect with REST refetch recovery
-- [ ] Frontend Docker container in docker-compose.yaml
+- [x] Next.js dashboard consuming FastAPI REST + WebSocket
+- [x] Daily Digest view: latest digest grouped by category, historical browsing
+- [x] Story Detail view: full pipeline data chain for a single story
+- [x] Live Feed view: real-time pipeline activity, action triggers, progress tracking
+- [x] System view: agent status, category breakdown, configuration
+- [x] WebSocket reconnect with REST refetch recovery
+- [x] Frontend Docker container in docker-compose.yaml
 - [ ] End-to-end dashboard tests
 
 ### Phase 7: Chat Agent (future, deferred)

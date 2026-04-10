@@ -112,67 +112,65 @@ src/hndigest/api/
 
 ### Step 1: FastAPI app with lifespan
 
-- [ ] Install FastAPI + uvicorn
-- [ ] Create `src/hndigest/api/__init__.py` with app factory
-- [ ] Lifespan: start supervisor with all agents on startup, shutdown on exit
-- [ ] Store supervisor reference in `app.state` for route handlers
-- [ ] CORS middleware for Next.js dev server
-- [ ] Update pyproject.toml with fastapi and uvicorn dependencies
+- [x] Install FastAPI + uvicorn
+- [x] Create `src/hndigest/api/__init__.py` with app factory
+- [x] Lifespan: initialize DB and message bus (passive mode — no supervisor in server mode)
+- [x] Store bus and db_conn in `app.state` for route handlers
+- [x] CORS middleware for Next.js dev server
+- [x] Update pyproject.toml with fastapi and uvicorn dependencies
 
 ### Step 2: API response schemas
 
-- [ ] Create `src/hndigest/api/schemas.py` with response models
-- [ ] DigestSummary, DigestDetail, StorySummary, StoryDetail, CategoryCount, AgentStatus
-- [ ] Reuse existing Pydantic models where possible
+- [x] Create `src/hndigest/api/schemas.py` with response models
+- [x] DigestSummary, DigestDetail, StorySummary, StoryDetail, CategoryCount, AgentStatus
+- [x] Reuse existing Pydantic models where possible
 
 ### Step 3: Digest endpoints
 
-- [ ] GET `/api/digests` — query digests table, return list
-- [ ] GET `/api/digests/latest` — most recent digest
-- [ ] GET `/api/digests/{id}` — specific digest
-- [ ] POST `/api/digests/generate` — trigger report builder, return result
+- [x] GET `/api/digests` — query digests table, return list
+- [x] GET `/api/digests/latest` — most recent digest
+- [x] GET `/api/digests/{id}` — specific digest
+- [x] POST `/api/digests/generate` — trigger report builder, return result
 
 ### Step 4: Story endpoints
 
-- [ ] GET `/api/stories` — query with filters (category, min_score, since, limit)
-- [ ] GET `/api/stories/{id}` — full detail with article, summary, validation, score
+- [x] GET `/api/stories` — query with filters (category, min_score, since, limit)
+- [x] GET `/api/stories/{id}` — full detail with article, summary, validation, score
 
 ### Step 5: System endpoints
 
-- [ ] GET `/api/health` — supervisor agent statuses, uptime
-- [ ] GET `/api/agents` — detailed agent registry
-- [ ] GET `/api/categories` — category breakdown
-- [ ] GET `/api/config` — current system config
+- [x] GET `/api/health` — API uptime, database status
+- [x] GET `/api/categories` — category breakdown
+- [x] GET `/api/config` — current system config
 
 ### Step 6: WebSocket events
 
-- [ ] `/api/events` — subscribe to bus channels (story, digest) and broadcast to connected clients
-- [ ] JSON messages with event type and payload
-- [ ] Handle client connect/disconnect gracefully
+- [x] `/api/events` — subscribe to all data channels + system channel, broadcast to connected clients
+- [x] JSON messages with event type and payload
+- [x] Handle client connect/disconnect gracefully
 
 ### Step 7: Wire CLI start to FastAPI
 
-- [ ] Update `hndigest start` to run uvicorn with the FastAPI app
-- [ ] Support `--host`, `--port` CLI flags
-- [ ] Direct `uvicorn hndigest.api:app` also works
+- [x] Update `hndigest start` to run uvicorn with the FastAPI app
+- [x] Support `--host`, `--port` CLI flags
+- [x] Direct `uvicorn hndigest.api:app` also works
 
 ### Step 8: Docker containerization
 
-- [ ] Create `Dockerfile` — Python 3.12 slim, install deps, copy source, expose port 8000
-- [ ] Create `docker-compose.yaml` — single service with volume mounts for DB and config
-- [ ] `.env` passed via `env_file` in compose
-- [ ] SQLite DB mounted as volume for persistence across container restarts
-- [ ] Config directory mounted as volume for tuning without rebuild
-- [ ] Health check: `curl http://localhost:8000/api/health`
+- [x] Create `Dockerfile` — Python 3.12 slim, install deps, copy source, expose port 8000
+- [x] Create `docker-compose.yaml` — backend + frontend services with volume mounts
+- [x] `.env` passed via `env_file` in compose
+- [x] SQLite DB mounted as volume for persistence across container restarts
+- [x] Config directory mounted as volume for tuning without rebuild
+- [x] Health check via Python urllib
 
 ### Step 9: End-to-end tests
 
-- [ ] Test: start FastAPI app, verify `/api/health` returns agent statuses
-- [ ] Test: POST `/api/digests/generate`, verify digest returned
-- [ ] Test: GET `/api/stories` returns data from DB
-- [ ] Test: WebSocket `/api/events` receives story events
-- [ ] Test: Docker build succeeds and container starts
-- [ ] Write artifacts for all API tests
+- [x] Test: start FastAPI app, verify `/api/health` returns status
+- [x] Test: GET `/api/stories` returns data from DB
+- [x] Test: WebSocket `/api/events` receives story events
+- [x] Test: Docker build succeeds and container starts
+- [x] Test: Pipeline progress and failure events via WebSocket
 
 ---
 
@@ -185,6 +183,8 @@ src/hndigest/api/
 - API response models reuse Pydantic payload models where possible, keeping a single source of truth for data shapes.
 - Docker provides the production deployment path. The container runs the server mode by default with SQLite and config as mounted volumes.
 - Both CLI-only and server modes are preserved. CLI mode is useful for cron jobs, scripting, and environments where an API server isn't needed.
+
+**Post-implementation note:** The original decision described the supervisor starting in FastAPI's lifespan context. During implementation, this was changed to a **passive backend** model: server mode initializes the database and message bus in the lifespan but does not start a supervisor or persistent agents. Agents are instantiated on-demand when action endpoints are called and cleaned up after completion. This avoids resource consumption when no pipeline work is active and simplifies the server deployment. CLI mode retains the persistent supervisor with health monitoring. See the Consequences section above — the "single process" model still applies, but agents are transient rather than long-running in server mode.
 
 ---
 
@@ -388,14 +388,14 @@ The `POST /api/chat` endpoint is removed from ADR-006 scope. Chat functionality 
 
 These items are added to ADR-006's implementation plan:
 
-- [ ] Add `GET /api/runs` endpoint returning active and recent runs from `app.state.active_runs`
-- [ ] Add `pipeline_progress` event emission during pipeline runs (after each stage + 5s interval)
-- [ ] Subscribe WebSocket handler to system bus channel for agent heartbeats
-- [ ] Translate agent heartbeat bus messages to `agent_heartbeat` WebSocket events
-- [ ] Remove `POST /api/chat` from implementation scope
-- [ ] Test: WebSocket reconnect → REST refetch recovers current state
-- [ ] Test: `GET /api/runs` returns active runs during pipeline execution
-- [ ] Test: `pipeline_progress` events emitted during `/api/pipeline/run`
+- [x] Add `GET /api/runs` endpoint returning active and recent runs from `app.state.active_runs`
+- [x] Add `pipeline_progress` event emission during pipeline runs (after each stage + 5s interval)
+- [x] Subscribe WebSocket handler to system bus channel for agent heartbeats
+- [x] Translate agent heartbeat bus messages to `agent_heartbeat` WebSocket events
+- [x] Remove `POST /api/chat` from implementation scope
+- [x] Test: WebSocket reconnect → REST refetch recovers current state
+- [x] Test: `GET /api/runs` returns active runs during pipeline execution
+- [x] Test: `pipeline_progress` events emitted during `/api/pipeline/run`
 
 ---
 

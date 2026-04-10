@@ -51,8 +51,9 @@ def cmd_start(args: Any) -> None:
 def _start_server(args: Any) -> None:
     """Start the FastAPI server with uvicorn.
 
-    The supervisor and all agents are managed by the FastAPI lifespan
-    context defined in ``hndigest.api``.
+    Server mode is a passive backend: the lifespan initializes the
+    database and message bus, but agents are created on-demand when
+    action endpoints are called.  No persistent supervisor runs.
 
     Args:
         args: Parsed CLI arguments with ``host`` and ``port``.

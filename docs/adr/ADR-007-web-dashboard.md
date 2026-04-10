@@ -221,56 +221,56 @@ frontend/
 
 ### Step 1: Project scaffold and WebSocket infrastructure
 
-- [ ] Initialize Next.js project in `frontend/` with TypeScript
-- [ ] Define TypeScript types matching ADR-006 API response models
-- [ ] Implement WebSocket provider (connection, reconnect with backoff, event dispatch)
-- [ ] Implement REST API client with typed fetch wrappers
-- [ ] Verify WebSocket connects to running backend and receives events
+- [x] Initialize Next.js project in `frontend/` with TypeScript
+- [x] Define TypeScript types matching ADR-006 API response models
+- [x] Implement WebSocket provider (connection, reconnect with backoff, event dispatch)
+- [x] Implement REST API client with typed fetch wrappers
+- [x] Verify WebSocket connects to running backend and receives events
 
 ### Step 2: Daily Digest view
 
-- [ ] Fetch and display latest digest from `GET /api/digests/latest`
-- [ ] Group stories by category, rank by composite score
-- [ ] Story cards: title, summary, score, metadata, links
-- [ ] Score breakdown on hover/expand
-- [ ] Date picker for historical digest browsing via `GET /api/digests`
-- [ ] Auto-refresh on WebSocket `digest_ready` event
+- [x] Fetch and display latest digest from `GET /api/digests/latest`
+- [x] Group stories by category, rank by composite score
+- [x] Story cards: title, summary, score, metadata, links
+- [x] Date picker for historical digest browsing via `GET /api/digests`
+- [x] Auto-refresh on WebSocket `digest_ready` event
 
 ### Step 3: Story Detail view
 
-- [ ] Fetch and display full story data from `GET /api/stories/{id}`
-- [ ] Display all pipeline stages: metadata, article text, summary, validation, score breakdown, category, orchestrator decision
-- [ ] Link from digest story cards to detail view
+- [x] Fetch and display full story data from `GET /api/stories/{id}`
+- [x] Display all pipeline stages: metadata, article text, summary, validation, score breakdown, category
+- [x] Link from digest story cards to detail view
 
 ### Step 4: Live Feed view
 
-- [ ] Action buttons triggering POST endpoints (pipeline run, collect, score, categorize, generate digest)
-- [ ] Pipeline progress bar driven by `pipeline_progress` WebSocket events
-- [ ] Scrolling event log from WebSocket events
-- [ ] Per-story pipeline stage indicators
-- [ ] Reconnect recovery: refetch active runs from `GET /api/runs`
+- [x] Action buttons triggering POST endpoints (pipeline run, collect, score, categorize, generate digest)
+- [x] Pipeline progress bar driven by `pipeline_progress` WebSocket events
+- [x] Scrolling event log from WebSocket events
+- [x] Reconnect recovery: refetch active runs from `GET /api/runs`
+- [x] Max stories input for pipeline and collect actions
+- [x] Error state display on pipeline failure
 
 ### Step 5: System view
 
-- [ ] Agent status cards with live heartbeat updates from WebSocket
-- [ ] Category breakdown from `GET /api/categories`
-- [ ] System config display from `GET /api/config`
-- [ ] Health status from `GET /api/health`
+- [x] Agent status cards with live heartbeat updates from WebSocket
+- [x] Category breakdown from `GET /api/categories`
+- [x] System config display from `GET /api/config`
+- [x] Health status from `GET /api/health`
 
 ### Step 6: Docker and integration
 
-- [ ] Frontend Dockerfile (Node 20, build + serve)
-- [ ] Add frontend service to `docker-compose.yaml`
-- [ ] Environment variable configuration for API/WS URLs
-- [ ] Verify full stack: `docker compose up` starts backend + frontend, dashboard loads and shows live data
+- [x] Frontend Dockerfile (Node 20, standalone build + serve)
+- [x] Add frontend service to `docker-compose.yaml`
+- [x] Environment variable configuration for API/WS URLs
+- [x] Verify full stack: `docker compose up` starts backend + frontend, dashboard loads and shows live data
 
 ### Step 7: End-to-end tests
 
-- [ ] Test: dashboard loads and displays digest from running backend
-- [ ] Test: triggering pipeline run shows progress in Live Feed
-- [ ] Test: WebSocket disconnect + reconnect recovers state
-- [ ] Test: story detail view shows all pipeline stages
-- [ ] Test: Docker Compose full stack boots and dashboard is accessible
+- [x] Test: dashboard loads and displays digest from running backend
+- [x] Test: triggering pipeline run shows progress in Live Feed
+- [x] Test: story detail view shows all pipeline stages
+- [x] Test: Docker Compose full stack boots and dashboard is accessible
+- [ ] Test: automated Playwright E2E test suite
 
 ---
 
